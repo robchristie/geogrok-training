@@ -9,6 +9,7 @@ description = "Training and evaluation scaffolding for panchromatic geospatial i
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "numpy>=2.3.0",
     "pandas>=2.3.0",
     "pyarrow>=20.0.0",
 ]
@@ -22,6 +23,10 @@ dev = [
 
 [project.scripts]
 geogrok-make-manifests = "geogrok.data.manifests:main"
+geogrok-extract-chips = "geogrok.data.chips:main"
+geogrok-benchmark-chips = "geogrok.data.benchmark:main"
+geogrok-benchmark-training = "geogrok.data.training:benchmark_main"
+geogrok-run-baseline = "geogrok.training.baseline:main"
 
 [tool.ruff]
 exclude = ["third_party", ".build", ".local", "tools/spacenet"]

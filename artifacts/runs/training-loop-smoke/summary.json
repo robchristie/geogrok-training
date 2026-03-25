@@ -1,0 +1,20 @@
+{
+  "train": {
+    "epochs": 2,
+    "megapixels_per_second_mean": 110.41956120665117,
+    "read_latency_ms_p95_mean": 16.546278147143305,
+    "sample_total_ms_p95_mean": 17.89598042960278,
+    "samples_per_second_mean": 105.30429955163113,
+    "transform_latency_ms_p95_mean": 1.975444672279991
+  },
+  "train_dataset_samples": 8,
+  "val": {
+    "epochs": 0,
+    "megapixels_per_second_mean": 0.0,
+    "read_latency_ms_p95_mean": 0.0,
+    "sample_total_ms_p95_mean": 0.0,
+    "samples_per_second_mean": 0.0,
+    "transform_latency_ms_p95_mean": 0.0
+  },
+  "val_dataset_samples": 0
+}

@@ -21,8 +21,32 @@ The current repo focus is phase 0:
   validation for an existing GDAL + Kakadu build
 - [scripts/smoke_gdal_kakadu_rasters.sh](/nvme/development/geogrok-training/scripts/smoke_gdal_kakadu_rasters.sh):
   real raster open/read smoke test
+- [scripts/smoke_on_demand_chips.sh](/nvme/development/geogrok-training/scripts/smoke_on_demand_chips.sh):
+  manifest-only, on-demand chip read smoke test
+- [scripts/smoke_chip_benchmark.sh](/nvme/development/geogrok-training/scripts/smoke_chip_benchmark.sh):
+  on-demand chip throughput benchmark smoke test
+- [scripts/smoke_training_dataset.sh](/nvme/development/geogrok-training/scripts/smoke_training_dataset.sh):
+  trainer-facing dataset smoke test
+- [scripts/smoke_training_loop.sh](/nvme/development/geogrok-training/scripts/smoke_training_loop.sh):
+  deterministic train/val dry-run loop with per-epoch metrics
+- [scripts/smoke_chip_extraction.sh](/nvme/development/geogrok-training/scripts/smoke_chip_extraction.sh):
+  optional manifest-to-chip extraction smoke test
+- [src/geogrok/io/raster.py](/nvme/development/geogrok-training/src/geogrok/io/raster.py):
+  GDAL-backed raster inspection, array reads, and optional chip export
 - [src/geogrok/data/manifests.py](/nvme/development/geogrok-training/src/geogrok/data/manifests.py):
   manifest generation CLI
+- [src/geogrok/data/runtime.py](/nvme/development/geogrok-training/src/geogrok/data/runtime.py):
+  manifest-backed on-demand chip dataset
+- [src/geogrok/data/benchmark.py](/nvme/development/geogrok-training/src/geogrok/data/benchmark.py):
+  throughput benchmark CLI and reporting
+- [src/geogrok/data/training.py](/nvme/development/geogrok-training/src/geogrok/data/training.py):
+  trainer-facing dataset, collation, and training-path benchmark
+- [src/geogrok/training/loop.py](/nvme/development/geogrok-training/src/geogrok/training/loop.py):
+  deterministic batching and per-epoch throughput metrics
+- [src/geogrok/training/baseline.py](/nvme/development/geogrok-training/src/geogrok/training/baseline.py):
+  framework-light dry-run training runner
+- [src/geogrok/data/chips.py](/nvme/development/geogrok-training/src/geogrok/data/chips.py):
+  optional chip extraction CLI
 - [src/geogrok/io/gdal_env.py](/nvme/development/geogrok-training/src/geogrok/io/gdal_env.py):
   Python-side GDAL runtime activation helper
 
@@ -244,11 +268,165 @@ Current artifacts:
 - `chips.parquet`
 - `summary.json`
 
+## On-Demand Chips
+
+Source the GDAL runtime first so the Kakadu-enabled Python bindings load with
+the correct shared-library path:
+
+```bash
+source .local/gdal-kakadu/env.sh
+```
+
+Read a small local subset directly from the manifest without writing chip files:
+
+```bash
+./scripts/smoke_on_demand_chips.sh
+```
+
+This path uses [runtime.py](/nvme/development/geogrok-training/src/geogrok/data/runtime.py)
+to:
+
+- filter `chips.parquet` down to local rows
+- read windows from the original source rasters on demand
+- return `uint16` arrays in `(C, H, W)` layout for training code
+
+The current smoke path reads real mirrored WV3 PAN NITF chips and reports
+shapes and value ranges without materializing intermediate TIFFs.
+
+## Throughput Benchmarking
+
+Performance measurement is intended to be part of the normal workflow.
+
+Benchmark on-demand chip reads:
+
+```bash
+source .local/gdal-kakadu/env.sh
+uv run geogrok-benchmark-chips \
+  --chips-path datasets/manifests/spacenet/chips.parquet \
+  --split train \
+  --modality PAN \
+  --limit 32 \
+  --repeat 2 \
+  --warmup 2
+```
+
+Reported metrics include:
+
+- `samples_per_second`
+- `megapixels_per_second`
+- `mebibytes_per_second`
+- `latency_ms_mean`
+- `latency_ms_p50`
+- `latency_ms_p95`
+- `latency_ms_max`
+- `unique_source_files`
+
+The benchmark also writes a JSON report. Default path:
+
+- `artifacts/benchmarks/chip-read-benchmark.json`
+
+Smoke test on real mirrored data:
+
+```bash
+./scripts/smoke_chip_benchmark.sh
+```
+
+Trainer-path benchmark with normalization enabled:
+
+```bash
+source .local/gdal-kakadu/env.sh
+uv run geogrok-benchmark-training \
+  --chips-path datasets/manifests/spacenet/chips.parquet \
+  --split train \
+  --modality PAN \
+  --limit 32 \
+  --repeat 2 \
+  --warmup 2 \
+  --output-dtype float32 \
+  --clip-min 0 \
+  --clip-max 2047 \
+  --scale-max 2047
+```
+
+This benchmark reports read time and transform time separately so you can see
+where throughput drops as preprocessing gets more expensive.
+
+## Training Dataset
+
+The default trainer-facing wrapper is
+[training.py](/nvme/development/geogrok-training/src/geogrok/data/training.py).
+It is framework-light for now and returns:
+
+- normalized `(C, H, W)` `numpy` arrays
+- original chip metadata
+- per-sample timing with `read_ms`, `transform_ms`, and `total_ms`
+
+Smoke test on real mirrored data:
+
+```bash
+./scripts/smoke_training_dataset.sh
+```
+
+## Training Loop Scaffold
+
+The repo now includes a deterministic dry-run training loop that:
+
+- batches on-demand samples
+- shuffles train epochs reproducibly from `seed + epoch`
+- keeps validation deterministic
+- logs per-epoch throughput and latency metrics to disk
+
+Run it with:
+
+```bash
+source .local/gdal-kakadu/env.sh
+uv run geogrok-run-baseline \
+  --chips-path datasets/manifests/spacenet/chips.parquet \
+  --epochs 2 \
+  --batch-size 8 \
+  --train-limit 32 \
+  --val-limit 16 \
+  --output-dtype float32 \
+  --clip-min 0 \
+  --clip-max 2047 \
+  --scale-max 2047
+```
+
+Outputs:
+
+- `artifacts/runs/training-dryrun/metrics.jsonl`
+- `artifacts/runs/training-dryrun/summary.json`
+
+Smoke test on real mirrored data:
+
+```bash
+./scripts/smoke_training_loop.sh
+```
+
+## Optional Chip Extraction
+
+If you need a materialized chip corpus for benchmarking or later cache
+experiments, the extractor remains available:
+
+```bash
+uv run geogrok-extract-chips \
+  --chips-path datasets/manifests/spacenet/chips.parquet \
+  --output-root datasets/chips/spacenet \
+  --modality PAN \
+  --limit 16
+```
+
+Optional smoke test:
+
+```bash
+./scripts/smoke_chip_extraction.sh
+```
+
 ## Next steps
 
 The next intended repo work after phase 0 is:
 
 1. mirror selected imagery into `datasets/spacenet.ai/`
-2. use the GDAL/Kakadu runtime in actual raster readers and chip extraction
-3. extend metadata and manifests with view-angle and off-nadir details
-4. add first retrieval and dense-task baselines
+2. extend manifests with view-angle and off-nadir details
+3. add the first retrieval baseline on on-demand PAN chips
+4. add the first dense-task baseline on on-demand PAN chips

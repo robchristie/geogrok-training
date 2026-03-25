@@ -121,3 +121,75 @@ pipeline.
 
 The next step should be wiring this runtime into the manifest/chipping path so actual raster reads go through src/geogrok/io/gdal_env.py and then adding the downloader + first chip extractor.
 
+The next sensible step is to enrich manifests and extracted-chip metadata with image-native acquisition fields, especially off-nadir / view geometry from the NITF side, so the first retrieval and dense baselines can be stratified by view difficulty instead of treating all PAN chips as equivalent.
+
+---
+
+• I would not use individual HTJ2K chip files as the main training format.
+
+  HTJ2K is attractive for storage, but for training it usually loses on the thing that matters
+  most: decode throughput and operational simplicity. You already need Kakadu for raw-source
+  access; forcing every training sample through JP2/HTJ2K decode adds CPU pressure, loader
+  complexity, and another failure mode. That is usually the wrong trade for chip-scale
+  training data.
+
+  My recommendation is a 3-tier setup:
+
+  1. Raw truth stays in the original source products.
+     Keep the original NITF / GeoTIFF assets under datasets/spacenet.ai/ and treat the
+     manifest windows as the canonical chip definition.
+  2. Training should default to on-the-fly reads plus an NVMe cache.
+     For early experiments, read windows directly from the source rasters using the chip
+     manifest and cache decoded chips locally. This avoids materializing a huge chip corpus
+     too early and keeps the dataset definition flexible.
+  3. If you need a materialized chip corpus, use lossless uint16 GeoTIFF with ZSTD, not LZW,
+     and not HTJ2K.
+     This is the best practical middle ground: preserves 11/12-bit PAN in uint16, compresses
+     well because the high bits are sparse and the signal is spatially correlated, and decodes
+     much faster and more simply than JP2/HTJ2K.
+
+  If I had to pick one concrete default for materialized chips, it would be:
+
+  - COMPRESS=ZSTD
+  - PREDICTOR=2
+  - ZSTD_LEVEL=6 or 9
+  - TILED=YES
+  - BLOCKXSIZE=512
+  - BLOCKYSIZE=512
+  - NUM_THREADS=ALL_CPUS
+
+  That is a better default than the current LZW setting in src/geogrok/io/raster.py.
+
+  What I would not do:
+
+  - Not millions of tiny uncompressed or LZW TIFFs as the main corpus.
+  - Not HTJ2K chips as the main trainer input format.
+  - Not converting to float32 on disk.
+  - Not throwing away bit depth early unless you have a measured reason.
+
+  For larger-scale training, the better long-term move is probably not “better per-chip TIFF
+  compression”, but “fewer filesystem objects”. The two serious options are:
+
+  - Keep chips virtual: manifest + source rasters + local cache.
+    This is the best starting point and probably enough for your 3090 experiments.
+  - Pack chips into shard containers for large runs.
+    If you get into large-scale repeated training, move to sharded storage instead of one-
+    file-per-chip. I would look at either:
+      - WebDataset tar shards if you want simple PyTorch streaming
+      - Zarr if you want chunked random access and compressed array storage
+
+  Between those two, I’d lean:
+
+  - WebDataset for large distributed training runs
+  - Zarr for analysis-heavy workflows and random chip access
+
+  So the practical answer is:
+
+  - Best immediate approach: manifest-defined chips, on-the-fly reads, optional local cache.
+  - Best materialized fallback: lossless uint16 GeoTIFF with ZSTD.
+  - Best archival compression: HTJ2K, but not as the main training-chip format.
+
+---
+
+  The next sensible step is to build the first actual trainer-facing dataset wrapper on top of src/geogrok/data/runtime.py: batching, normalization, optional augmentations, and split-aware sampling for a first PAN classification or retrieval baseline.
+

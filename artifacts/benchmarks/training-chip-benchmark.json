@@ -1,0 +1,20 @@
+{
+  "elapsed_seconds": 0.06594645499717444,
+  "mebibytes_per_second": 485.24215594865683,
+  "megapixels_per_second": 127.20331972900469,
+  "read_latency_ms_mean": 7.065704630804248,
+  "read_latency_ms_p50": 6.94656150881201,
+  "read_latency_ms_p95": 7.994420453906059,
+  "samples": 8,
+  "samples_per_second": 121.31053898716421,
+  "total_bytes": 33554432,
+  "total_latency_ms_mean": 8.211846899939701,
+  "total_latency_ms_p50": 8.510032494086772,
+  "total_latency_ms_p95": 9.349000285146758,
+  "total_pixels": 8388608,
+  "transform_latency_ms_mean": 1.1451822792878374,
+  "transform_latency_ms_p50": 1.1797160259447992,
+  "transform_latency_ms_p95": 1.7614991927985102,
+  "unique_source_files": 1,
+  "warmup_samples": 2
+}

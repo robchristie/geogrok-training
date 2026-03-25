@@ -52,9 +52,10 @@ def build_environment(prefix: str | Path) -> dict[str, str]:
     if runtime.data_dir.exists():
         env["GDAL_DATA"] = str(runtime.data_dir)
 
-    if runtime.proj_dir.exists():
-        env["PROJ_DATA"] = str(runtime.proj_dir)
-        env["PROJ_LIB"] = str(runtime.proj_dir)
+    proj_dir = _resolve_proj_dir(runtime)
+    if proj_dir is not None:
+        env["PROJ_DATA"] = str(proj_dir)
+        env["PROJ_LIB"] = str(proj_dir)
 
     if runtime.library_paths:
         joined = os.pathsep.join(str(path) for path in runtime.library_paths)
@@ -87,3 +88,31 @@ def _prepend_value(value: str, current: str | None) -> str:
     if value in parts:
         return current
     return os.pathsep.join((value, current))
+
+
+def _resolve_proj_dir(runtime: GdalRuntime) -> Path | None:
+    candidates = [runtime.proj_dir]
+
+    for variable in ("PROJ_DATA", "PROJ_LIB"):
+        configured = os.environ.get(variable)
+        if configured:
+            candidates.append(Path(configured))
+
+    base_prefix = Path(sys.base_prefix)
+    candidates.extend(
+        (
+            base_prefix / "share" / "proj",
+            Path("/usr/share/proj"),
+            Path("/usr/local/share/proj"),
+        )
+    )
+
+    seen: set[Path] = set()
+    for candidate in candidates:
+        resolved = candidate.expanduser().resolve(strict=False)
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        if candidate.exists() and (candidate / "proj.db").exists():
+            return candidate
+    return None

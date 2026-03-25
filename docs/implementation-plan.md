@@ -105,6 +105,7 @@ Manifest responsibilities:
 - preserve source `key`, `scene_id`, geometry bytes, and acquisition timestamps
 - expose derived fields needed by the first training loop:
   `city`, `split`, `sensor`, `modality`, `capture_id`, `asset_preference_rank`
+- support repeatable performance measurement against real local assets
 
 ## Phase 1
 
@@ -121,6 +122,7 @@ Required inputs from Phase 0:
 - chip manifest
 - stable split assignment
 - local path resolution
+- GDAL-backed on-demand chip reads from real local assets
 
 ### 1.2 Dense-task baseline
 
@@ -132,6 +134,15 @@ Initial benchmark:
 
 The manifest layer must stay image-space native. No orthorectification should be
 introduced into the primary training path unless a task explicitly needs it.
+The default training path should remain manifest-only and on-demand. Materialized
+chip files are a secondary option for later cache or benchmarking experiments,
+not the baseline corpus format.
+Performance measurement should be first-class from the start: every major data
+path should have a cheap benchmark command and structured throughput report.
+The trainer-facing dataset should preserve that principle by exposing separate
+read and transform timings instead of only reporting end-to-end sample latency.
+The first training loop should follow the same rule by logging epoch-level
+throughput and latency metrics to disk for both train and validation stages.
 
 ## Immediate next repo tasks
 
@@ -139,10 +150,10 @@ After this patch lands, the next high-value work items are:
 
 1. add a downloader that mirrors selected manifest rows into
    `datasets/spacenet.ai/`
-2. add a GDAL-backed raster reader that consumes the local Kakadu-enabled build
-3. extend manifests with off-nadir metadata once the relevant NITF tags are
+2. extend manifests with off-nadir metadata once the relevant NITF tags are
    being parsed
-4. add the first baseline evaluation runner for retrieval and dense tasks
+3. add the first retrieval baseline evaluation runner on on-demand PAN chips
+4. add the first dense-task baseline evaluation runner on on-demand PAN chips
 
 ## Commands
 
@@ -162,4 +173,55 @@ Smoke-test only a small slice:
 
 ```bash
 uv run geogrok-make-manifests --limit-assets 8
+```
+
+Smoke-test on-demand PAN chip reads from the manifest:
+
+```bash
+source .local/gdal-kakadu/env.sh
+./scripts/smoke_on_demand_chips.sh
+```
+
+Optional materialized chip export:
+
+```bash
+source .local/gdal-kakadu/env.sh
+uv run geogrok-extract-chips --limit 16 --modality PAN
+```
+
+Benchmark on-demand chip throughput:
+
+```bash
+source .local/gdal-kakadu/env.sh
+uv run geogrok-benchmark-chips --limit 32 --repeat 2 --warmup 2 --modality PAN
+```
+
+Benchmark the trainer-facing path with normalization enabled:
+
+```bash
+source .local/gdal-kakadu/env.sh
+uv run geogrok-benchmark-training \
+  --limit 32 \
+  --repeat 2 \
+  --warmup 2 \
+  --modality PAN \
+  --output-dtype float32 \
+  --clip-min 0 \
+  --clip-max 2047 \
+  --scale-max 2047
+```
+
+Run the deterministic dry-run training loop:
+
+```bash
+source .local/gdal-kakadu/env.sh
+uv run geogrok-run-baseline \
+  --epochs 2 \
+  --batch-size 8 \
+  --train-limit 32 \
+  --val-limit 16 \
+  --output-dtype float32 \
+  --clip-min 0 \
+  --clip-max 2047 \
+  --scale-max 2047
 ```
