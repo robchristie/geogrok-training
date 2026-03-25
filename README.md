@@ -29,6 +29,8 @@ The current repo focus is phase 0:
   trainer-facing dataset smoke test
 - [scripts/smoke_training_loop.sh](/nvme/development/geogrok-training/scripts/smoke_training_loop.sh):
   deterministic train/val dry-run loop with per-epoch metrics
+- [scripts/smoke_embedding_baseline.sh](/nvme/development/geogrok-training/scripts/smoke_embedding_baseline.sh):
+  deterministic embedding and retrieval smoke test
 - [scripts/smoke_chip_extraction.sh](/nvme/development/geogrok-training/scripts/smoke_chip_extraction.sh):
   optional manifest-to-chip extraction smoke test
 - [src/geogrok/io/raster.py](/nvme/development/geogrok-training/src/geogrok/io/raster.py):
@@ -45,6 +47,8 @@ The current repo focus is phase 0:
   deterministic batching and per-epoch throughput metrics
 - [src/geogrok/training/baseline.py](/nvme/development/geogrok-training/src/geogrok/training/baseline.py):
   framework-light dry-run training runner
+- [src/geogrok/retrieval/baseline.py](/nvme/development/geogrok-training/src/geogrok/retrieval/baseline.py):
+  deterministic PAN embedding and retrieval baseline
 - [src/geogrok/data/chips.py](/nvme/development/geogrok-training/src/geogrok/data/chips.py):
   optional chip extraction CLI
 - [src/geogrok/io/gdal_env.py](/nvme/development/geogrok-training/src/geogrok/io/gdal_env.py):
@@ -401,6 +405,45 @@ Smoke test on real mirrored data:
 
 ```bash
 ./scripts/smoke_training_loop.sh
+```
+
+## Embedding Baseline
+
+The first retrieval baseline is intentionally simple and deterministic. It:
+
+- reads normalized PAN chips from the trainer-facing dataset
+- computes a handcrafted embedding from coarse pooled intensity, gradient, and
+  profile features
+- evaluates nearest-neighbor retrieval by `scene_id` or `capture_id`
+- logs read, transform, embedding, and total latency
+
+Run it with:
+
+```bash
+source .local/gdal-kakadu/env.sh
+uv run geogrok-run-embedding-baseline \
+  --chips-path datasets/manifests/spacenet/chips.parquet \
+  --split train \
+  --modality PAN \
+  --limit 64 \
+  --output-dtype float32 \
+  --clip-min 0 \
+  --clip-max 2047 \
+  --scale-max 2047 \
+  --positive-key scene_id
+```
+
+Outputs:
+
+- `artifacts/runs/embedding-baseline/embeddings.npy`
+- `artifacts/runs/embedding-baseline/index.parquet`
+- `artifacts/runs/embedding-baseline/benchmark.json`
+- `artifacts/runs/embedding-baseline/retrieval.json`
+
+Smoke test on real mirrored data:
+
+```bash
+./scripts/smoke_embedding_baseline.sh
 ```
 
 ## Optional Chip Extraction

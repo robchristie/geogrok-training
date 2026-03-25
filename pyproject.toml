@@ -27,6 +27,7 @@ geogrok-extract-chips = "geogrok.data.chips:main"
 geogrok-benchmark-chips = "geogrok.data.benchmark:main"
 geogrok-benchmark-training = "geogrok.data.training:benchmark_main"
 geogrok-run-baseline = "geogrok.training.baseline:main"
+geogrok-run-embedding-baseline = "geogrok.retrieval.baseline:main"
 
 [tool.ruff]
 exclude = ["third_party", ".build", ".local", "tools/spacenet"]

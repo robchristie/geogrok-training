@@ -1,0 +1,8 @@
+{
+  "mean_reciprocal_rank": 1.0,
+  "positive_key": "scene_id",
+  "queries_evaluated": 16,
+  "recall_at_1": 1.0,
+  "recall_at_10": 1.0,
+  "recall_at_5": 1.0
+}

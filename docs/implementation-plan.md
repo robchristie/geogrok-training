@@ -225,3 +225,17 @@ uv run geogrok-run-baseline \
   --clip-max 2047 \
   --scale-max 2047
 ```
+
+Run the deterministic embedding baseline:
+
+```bash
+source .local/gdal-kakadu/env.sh
+uv run geogrok-run-embedding-baseline \
+  --limit 64 \
+  --modality PAN \
+  --output-dtype float32 \
+  --clip-min 0 \
+  --clip-max 2047 \
+  --scale-max 2047 \
+  --positive-key scene_id
+```
