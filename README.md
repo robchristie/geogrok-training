@@ -45,6 +45,8 @@ The current repo focus is phase 0:
   PyTorch GPU held-out pair-based retrieval smoke test
 - [scripts/smoke_pretrained_benchmark.sh](/nvme/development/geogrok-training/scripts/smoke_pretrained_benchmark.sh):
   frozen pretrained encoder benchmark on the held-out pair protocol
+- [scripts/smoke_pan_adapt_benchmark.sh](/nvme/development/geogrok-training/scripts/smoke_pan_adapt_benchmark.sh):
+  teacher-student PAN adaptation benchmark smoke test
 - [scripts/smoke_chip_extraction.sh](/nvme/development/geogrok-training/scripts/smoke_chip_extraction.sh):
   optional manifest-to-chip extraction smoke test
 - [src/geogrok/io/raster.py](/nvme/development/geogrok-training/src/geogrok/io/raster.py):
@@ -73,6 +75,8 @@ The current repo focus is phase 0:
   GPU-capable PyTorch PAN retrieval encoder baseline
 - [src/geogrok/retrieval/pretrained_benchmark.py](/nvme/development/geogrok-training/src/geogrok/retrieval/pretrained_benchmark.py):
   frozen pretrained encoder benchmark runner
+- [src/geogrok/retrieval/pan_adapt_benchmark.py](/nvme/development/geogrok-training/src/geogrok/retrieval/pan_adapt_benchmark.py):
+  teacher-student PAN adaptation benchmark runner
 - [src/geogrok/data/chips.py](/nvme/development/geogrok-training/src/geogrok/data/chips.py):
   optional chip extraction CLI
 - [src/geogrok/io/gdal_env.py](/nvme/development/geogrok-training/src/geogrok/io/gdal_env.py):
@@ -906,6 +910,115 @@ So the next model work should still not assume an RS-pretrained model is
 automatically better here; the modality gap is still dominating. The practical
 reference set to beat is now `resnet152` for top-k retrieval and
 `dinov3_vitb16` for early-rank retrieval quality.
+
+## PAN Adaptation Benchmark
+
+The repo can now benchmark a PAN-only student against a frozen teacher
+embedding space on the same held-out pair protocol.
+
+The current benchmark setup is:
+
+- teacher: frozen pretrained encoder from `geogrok-benchmark-pretrained`
+- student: PAN-only CNN over normalized `128 x 128` chips, with
+  `baseline_cnn` and stronger `residual_cnn` options
+- training objective:
+  - explicit `positive_exact` / `positive_weak` pairs from `pairs.parquet`
+  - cosine alignment to the teacher embedding
+  - teacher similarity-structure matching within each batch
+  - multi-view PAN consistency across two augmented student views
+  - weighted exact-vs-weak positive pair matching
+  - dynamic hard-negative separation against `negative_hard` pairs
+  - contrastive `NT-Xent` on the fused student embedding
+- evaluation: held-out `val/test` pair retrieval with the same metrics as the
+  frozen benchmark
+
+Run it with:
+
+```bash
+source .local/gdal-kakadu/env.sh
+uv sync --extra dev --extra train
+uv run geogrok-benchmark-pan-adapt \
+  --chips-path datasets/manifests/spacenet/chips.parquet \
+  --pairs-path datasets/pairs/spacenet/pairs.parquet \
+  --teacher-model dinov3_vitb16 \
+  --train-split train \
+  --query-split val \
+  --query-split test \
+  --gallery-split val \
+  --gallery-split test \
+  --modality PAN \
+  --train-limit 512 \
+  --eval-limit 512 \
+  --teacher-batch-size 16 \
+  --student-image-size 128 \
+  --student-arch residual_cnn \
+  --student-base-channels 64 \
+  --epochs 24 \
+  --steps-per-epoch 48 \
+  --pairs-per-batch 32 \
+  --eval-batch-size 64 \
+  --contrastive-weight 1.0 \
+  --alignment-weight 1.0 \
+  --structure-weight 0.5 \
+  --view-consistency-weight 0.25 \
+  --positive-pair-weight 0.5 \
+  --hard-negative-weight 0.25 \
+  --positive-exact-weight 2.0 \
+  --positive-weak-weight 1.0 \
+  --hard-negative-max-similarity 0.2 \
+  --hard-negative-gap-scale 0.5 \
+  --hard-negative-min-similarity -0.25 \
+  --augmentation-min-crop-scale 0.7 \
+  --augmentation-noise-std 0.02 \
+  --augmentation-gamma-jitter 0.15 \
+  --augmentation-blur-probability 0.2 \
+  --device auto \
+  --amp
+```
+
+Smoke test:
+
+```bash
+./scripts/smoke_pan_adapt_benchmark.sh
+```
+
+The smoke script now defaults to `dinov3_vitb16` plus the stronger
+`residual_cnn` student.
+
+Latest held-out smoke result with `dinov3_vitb16` as teacher and `residual_cnn`
+student:
+
+- teacher: `exact_R@10=0.591`, `any_R@10=0.524`, `any_MRR=0.375`
+- student: `exact_R@10=0.121`, `any_R@10=0.125`, `any_MRR=0.065`
+  Earlier dynamic-margin run without adversarial mining.
+
+Latest held-out smoke result after adversarial same-city non-overlap mining:
+
+- teacher: `exact_R@10=0.591`, `any_R@10=0.524`, `any_MRR=0.375`
+- student: `exact_R@10=0.087`, `any_R@10=0.122`, `any_MRR=0.056`
+- mined hard negatives: `30` pairs with `teacher_sim_mean=0.9113`,
+  `teacher_sim_p95=0.9486`
+
+Apples-to-apples check with the same `residual_cnn` student and `resnet152`
+teacher:
+
+- teacher: `exact_R@10=0.624`, `any_R@10=0.542`, `any_MRR=0.356`
+- student: `exact_R@10=0.074`, `any_R@10=0.083`, `any_MRR=0.046`
+
+The student is still far below the teacher. The updated recipe is helpful on
+the `dinov3` teacher path, but not universally better. It shows:
+
+- the PAN adaptation path is now implemented end to end
+- weighted positives plus multi-view/structure distillation can move the
+  student in the right direction
+- the effect is teacher-dependent, so the adaptation objective is still not
+  stable
+- the hard-negative path is now active on mined adversarial negatives
+  (`hardneg_mean=0.2234`), which means the training signal is finally aligned
+  with confusable same-city non-overlap pairs
+- the student is still recall-poor, especially on weak positives and early rank
+- future work should focus on a better PAN adaptation recipe, not on adding
+  more frozen controls
 
 ## Optional Chip Extraction
 

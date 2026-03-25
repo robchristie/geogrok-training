@@ -422,3 +422,40 @@ The expanded frozen benchmark now also includes `resnet101`, `resnet152`,
 
 So the benchmark bar is no longer a single model. Use `resnet152` and
 `dinov3_vitb16` as the practical frozen controls for the next phase.
+
+Add a PAN-aware adaptation benchmark that uses one of those frozen controls as a
+teacher and trains a PAN-only student against the same held-out pair protocol:
+
+```bash
+./scripts/smoke_pan_adapt_benchmark.sh
+```
+
+The PAN adaptation benchmark now supports:
+
+- teacher: any frozen model from `geogrok-benchmark-pretrained`
+- student: `baseline_cnn` or stronger `residual_cnn`
+- objective:
+  - pairwise contrastive loss
+  - cosine alignment to teacher embeddings
+  - teacher similarity-structure matching
+  - multi-view PAN consistency across augmented crops
+  - weighted exact-vs-weak positive pair matching
+  - dynamic hard-negative separation from `negative_hard` pairs
+
+Current held-out smoke results:
+
+- `dinov3_vitb16 -> residual_cnn`
+  - teacher: `exact_R@10=0.591`, `any_R@10=0.524`, `any_MRR=0.375`
+  - student: `exact_R@10=0.087`, `any_R@10=0.122`, `any_MRR=0.056`
+  - adversarial mined negatives: `30` pairs with
+    `teacher_sim_mean=0.9113`, `teacher_sim_p95=0.9486`
+- `resnet152 -> residual_cnn`
+  - teacher: `exact_R@10=0.624`, `any_R@10=0.542`, `any_MRR=0.356`
+  - student: `exact_R@10=0.074`, `any_R@10=0.083`, `any_MRR=0.046`
+
+That is still a useful failure, but it is a better failure. The path is real,
+and the richer adaptation objective helps the `dinov3` teacher path. It is not
+rather than stable across teachers, but the adversarial mining pass did make the
+hard-negative term active against highly confusable same-city non-overlap pairs.
+The next work should stay focused on adaptation quality
+rather than on adding more frozen control models.

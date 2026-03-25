@@ -209,8 +209,6 @@ The next sensible step is to enrich manifests and extracted-chip metadata with i
      This is especially important for your case. Two chips from the same image but different
      semantics should often be explicit negatives, not automatic positives.
 
-       The next step I’d recommend is not adding more random pretrained models. I’d move to models
-  or training schemes that are explicitly about modality adaptation to PAN, because the
-  current result says that generic RGB priors are still beating the RS controls once
-  everything is forced through single-band PAN.
 
+
+  The next step I’d take is to make the mined negatives part of evaluation as well: add a small adversarial-negative retrieval report so we can measure whether training is actually improving rejection of these confusable pairs instead of only watching aggregate R@K drift.

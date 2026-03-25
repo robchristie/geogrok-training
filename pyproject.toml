@@ -40,6 +40,7 @@ geogrok-run-learned-embedding = "geogrok.retrieval.learned:main"
 geogrok-run-cnn-embedding = "geogrok.retrieval.cnn:main"
 geogrok-run-torch-embedding = "geogrok.retrieval.torch_encoder:main"
 geogrok-benchmark-pretrained = "geogrok.retrieval.pretrained_benchmark:main"
+geogrok-benchmark-pan-adapt = "geogrok.retrieval.pan_adapt_benchmark:main"
 
 [tool.ruff]
 exclude = ["third_party", ".build", ".local", "tools/spacenet"]
