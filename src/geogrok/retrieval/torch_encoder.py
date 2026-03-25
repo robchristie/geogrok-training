@@ -12,6 +12,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from geogrok.data.runtime import OnDemandChipDataset
+from geogrok.data.training import TrainingChipDataset
 from geogrok.retrieval.baseline import (
     RetrievalReport,
     build_dataset,
@@ -22,17 +24,26 @@ from geogrok.retrieval.baseline import (
 )
 from geogrok.retrieval.cnn import PreprocessReport, extract_images
 from geogrok.retrieval.learned import sample_pair_batch
+from geogrok.retrieval.pair_eval import (
+    PairRetrievalReport,
+    chip_ids_from_pairs,
+    evaluate_pair_retrieval,
+)
 
 DEFAULT_RUN_ROOT = Path("artifacts/runs/torch-embedding-baseline")
 
 
 @dataclass(frozen=True)
 class TorchTrainingReport:
+    train_sampling: str
     device: str
     device_name: str
     amp_enabled: bool
     train_samples: int
     train_scenes: int
+    train_positive_pairs: int
+    train_positive_exact_pairs: int
+    train_positive_weak_pairs: int
     epochs: int
     steps_per_epoch: int
     pairs_per_batch: int
@@ -91,25 +102,25 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--train-split",
         action="append",
-        default=["train"],
+        default=None,
         help="Split used for contrastive training. Repeat to add more splits.",
     )
     parser.add_argument(
         "--query-split",
         action="append",
-        default=["val", "test"],
+        default=None,
         help="Query split for retrieval evaluation. Repeat to add more splits.",
     )
     parser.add_argument(
         "--gallery-split",
         action="append",
-        default=["val", "test"],
+        default=None,
         help="Gallery split for retrieval evaluation. Repeat to add more splits.",
     )
     parser.add_argument(
         "--modality",
         action="append",
-        default=["PAN"],
+        default=None,
         help="Modality to include. Repeat to add more modalities.",
     )
     parser.add_argument("--train-limit", type=int, default=256)
@@ -135,6 +146,19 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--temperature", type=float, default=0.1)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument(
+        "--pairs-path",
+        type=Path,
+        help="Optional explicit pairs.parquet used for retrieval evaluation.",
+    )
+    parser.add_argument(
+        "--train-pairs-path",
+        type=Path,
+        help=(
+            "Optional explicit pairs.parquet used to define positive training pairs. "
+            "Defaults to --pairs-path when provided."
+        ),
+    )
+    parser.add_argument(
         "--device",
         choices=("auto", "cpu", "cuda"),
         default="auto",
@@ -157,6 +181,167 @@ def build_positive_groups(
         for _, group in metadata.groupby("positive_label", sort=False)
         if len(group) >= 2
     ]
+
+
+def build_explicit_positive_pairs(
+    metadata_records: Sequence[dict[str, object]],
+    pair_frame: pd.DataFrame,
+) -> tuple[np.ndarray, int, int]:
+    metadata = pd.DataFrame(metadata_records).reset_index(drop=True).copy()
+    if metadata.empty or pair_frame.empty:
+        return np.empty((0, 2), dtype=np.int64), 0, 0
+
+    metadata["chip_id"] = metadata["chip_id"].astype(str)
+    chip_index = {chip_id: int(index) for index, chip_id in enumerate(metadata["chip_id"])}
+
+    positives = pair_frame[
+        pair_frame["pair_label"].isin(["positive_exact", "positive_weak"])
+    ].copy()
+    if positives.empty:
+        return np.empty((0, 2), dtype=np.int64), 0, 0
+
+    positives["query_chip_id"] = positives["query_chip_id"].astype(str)
+    positives["candidate_chip_id"] = positives["candidate_chip_id"].astype(str)
+    positives["query_index"] = positives["query_chip_id"].map(chip_index)
+    positives["candidate_index"] = positives["candidate_chip_id"].map(chip_index)
+    positives = positives.dropna(subset=["query_index", "candidate_index"]).copy()
+    if positives.empty:
+        return np.empty((0, 2), dtype=np.int64), 0, 0
+
+    positives["query_index"] = positives["query_index"].astype(int)
+    positives["candidate_index"] = positives["candidate_index"].astype(int)
+    positives = positives[positives["query_index"] != positives["candidate_index"]].copy()
+    if positives.empty:
+        return np.empty((0, 2), dtype=np.int64), 0, 0
+
+    positives["pair_priority"] = np.where(positives["pair_label"] == "positive_exact", 0, 1)
+    positives["left_index"] = positives[["query_index", "candidate_index"]].min(axis=1)
+    positives["right_index"] = positives[["query_index", "candidate_index"]].max(axis=1)
+    positives = (
+        positives.sort_values(["pair_priority", "left_index", "right_index"])
+        .drop_duplicates(subset=["left_index", "right_index"], keep="first")
+        .reset_index(drop=True)
+    )
+
+    pair_indices = positives[["left_index", "right_index"]].to_numpy(dtype=np.int64)
+    exact_pairs = int((positives["pair_label"] == "positive_exact").sum())
+    weak_pairs = int((positives["pair_label"] == "positive_weak").sum())
+    return pair_indices, exact_pairs, weak_pairs
+
+
+def sample_explicit_pair_batch(
+    positive_pairs: np.ndarray,
+    *,
+    pairs_per_batch: int,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    if positive_pairs.ndim != 2 or positive_pairs.shape[1] != 2:
+        raise ValueError("positive_pairs must have shape (n, 2).")
+    selected_pairs = rng.choice(
+        len(positive_pairs),
+        size=pairs_per_batch,
+        replace=len(positive_pairs) < pairs_per_batch,
+    )
+    batch_pairs = positive_pairs[selected_pairs]
+    return batch_pairs.reshape(-1).astype(np.int64, copy=False)
+
+
+def filter_pairs_for_records(
+    pair_frame: pd.DataFrame,
+    records_frame: pd.DataFrame,
+    *,
+    pair_labels: set[str] | None = None,
+) -> pd.DataFrame:
+    if pair_frame.empty or records_frame.empty:
+        return pd.DataFrame(columns=list(pair_frame.columns))
+
+    filtered = pair_frame.copy()
+    if pair_labels is not None:
+        filtered = filtered[filtered["pair_label"].isin(pair_labels)].copy()
+    if filtered.empty:
+        return filtered.reset_index(drop=True)
+
+    chip_ids = set(records_frame["chip_id"].astype(str))
+    filtered["query_chip_id"] = filtered["query_chip_id"].astype(str)
+    filtered["candidate_chip_id"] = filtered["candidate_chip_id"].astype(str)
+    filtered = filtered[
+        filtered["query_chip_id"].isin(chip_ids) & filtered["candidate_chip_id"].isin(chip_ids)
+    ].reset_index(drop=True)
+    return filtered
+
+
+def build_pair_training_dataset(
+    chips_path: Path,
+    *,
+    splits: Sequence[str],
+    modalities: Sequence[str],
+    pair_frame: pd.DataFrame,
+    limit: int | None,
+    gdal_prefix: Path | None,
+    output_dtype: str,
+    clip_min: float,
+    clip_max: float,
+    scale_max: float,
+) -> tuple[TrainingChipDataset, pd.DataFrame]:
+    dataset = TrainingChipDataset.from_manifest(
+        chips_path,
+        splits=tuple(splits),
+        modalities=tuple(modalities),
+        limit=None,
+        gdal_prefix=gdal_prefix,
+        output_dtype=output_dtype,
+        clip_min=clip_min,
+        clip_max=clip_max,
+        scale_max=scale_max,
+    )
+    records_frame = dataset.records_frame().copy()
+    positive_pairs = filter_pairs_for_records(
+        pair_frame,
+        records_frame,
+        pair_labels={"positive_exact", "positive_weak"},
+    )
+    if positive_pairs.empty:
+        raise SystemExit("No positive training pairs overlap with the requested training splits.")
+
+    train_chip_ids = chip_ids_from_pairs(positive_pairs)
+    records_frame = (
+        records_frame[records_frame["chip_id"].astype(str).isin(train_chip_ids)]
+        .sort_values(["asset_id", "chip_id"])
+        .reset_index(drop=True)
+    )
+    if limit is not None and len(records_frame) > limit:
+        limited_frame = records_frame.head(limit).reset_index(drop=True)
+        positive_pairs = filter_pairs_for_records(
+            positive_pairs,
+            limited_frame,
+            pair_labels={"positive_exact", "positive_weak"},
+        )
+        if positive_pairs.empty:
+            raise SystemExit(
+                "Training chip limit removed all positive pairs. "
+                "Increase --train-limit or disable it."
+            )
+        limited_chip_ids = chip_ids_from_pairs(positive_pairs)
+        records_frame = (
+            limited_frame[limited_frame["chip_id"].astype(str).isin(limited_chip_ids)]
+            .reset_index(drop=True)
+        )
+
+    dataset = TrainingChipDataset(
+        OnDemandChipDataset(records_frame, gdal_prefix=gdal_prefix),
+        output_dtype=output_dtype,
+        clip_min=clip_min,
+        clip_max=clip_max,
+        scale_max=scale_max,
+    )
+    positive_pairs = filter_pairs_for_records(
+        positive_pairs,
+        dataset.records_frame(),
+        pair_labels={"positive_exact", "positive_weak"},
+    )
+    if positive_pairs.empty:
+        raise SystemExit("No positive training pairs remain after dataset filtering.")
+    return dataset, positive_pairs
 
 
 def resolve_device(torch: Any, requested: str) -> tuple[str, str]:
@@ -243,6 +428,7 @@ def train_torch_encoder(
     metadata_records: Sequence[dict[str, object]],
     *,
     positive_key: str,
+    pair_frame: pd.DataFrame | None,
     base_channels: int,
     embedding_dim: int,
     dropout: float,
@@ -264,9 +450,23 @@ def train_torch_encoder(
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
-    positive_groups = build_positive_groups(metadata_records, positive_key=positive_key)
-    if not positive_groups:
-        raise ValueError("No positive groups with at least two chips were found for training.")
+    positive_groups: list[np.ndarray] = []
+    positive_pairs = np.empty((0, 2), dtype=np.int64)
+    exact_pairs = 0
+    weak_pairs = 0
+    train_sampling = "implicit_groups"
+    if pair_frame is not None:
+        positive_pairs, exact_pairs, weak_pairs = build_explicit_positive_pairs(
+            metadata_records,
+            pair_frame,
+        )
+        if len(positive_pairs) == 0:
+            raise ValueError("No explicit positive training pairs were found for training.")
+        train_sampling = "explicit_pairs"
+    else:
+        positive_groups = build_positive_groups(metadata_records, positive_key=positive_key)
+        if not positive_groups:
+            raise ValueError("No positive groups with at least two chips were found for training.")
 
     device = torch.device(device_name)
     if device.type == "cuda":
@@ -291,11 +491,18 @@ def train_torch_encoder(
     for _epoch in range(epochs):
         model.train()
         for _step in range(steps_per_epoch):
-            batch_indices = sample_pair_batch(
-                positive_groups,
-                pairs_per_batch=pairs_per_batch,
-                rng=rng,
-            )
+            if pair_frame is not None:
+                batch_indices = sample_explicit_pair_batch(
+                    positive_pairs,
+                    pairs_per_batch=pairs_per_batch,
+                    rng=rng,
+                )
+            else:
+                batch_indices = sample_pair_batch(
+                    positive_groups,
+                    pairs_per_batch=pairs_per_batch,
+                    rng=rng,
+                )
             batch_start = perf_counter()
             batch = torch.from_numpy(images[batch_indices]).to(device=device, dtype=torch.float32)
             batch = augment_batch(torch, batch)
@@ -321,11 +528,15 @@ def train_torch_encoder(
     total_steps = epochs * steps_per_epoch
     total_images = total_steps * pairs_per_batch * 2
     report = TorchTrainingReport(
+        train_sampling=train_sampling,
         device=device.type,
         device_name="CPU" if device.type == "cpu" else str(torch.cuda.get_device_name(device)),
         amp_enabled=bool(amp_enabled and device.type == "cuda"),
         train_samples=int(len(images)),
         train_scenes=len(positive_groups),
+        train_positive_pairs=int(len(positive_pairs)),
+        train_positive_exact_pairs=exact_pairs,
+        train_positive_weak_pairs=weak_pairs,
         epochs=epochs,
         steps_per_epoch=steps_per_epoch,
         pairs_per_batch=pairs_per_batch,
@@ -399,7 +610,7 @@ def write_outputs(
     eval_preprocess_report: PreprocessReport,
     training_report: TorchTrainingReport,
     embedding_report: TorchEmbeddingReport,
-    retrieval_report: RetrievalReport,
+    retrieval_report: RetrievalReport | PairRetrievalReport,
     run_root: Path,
 ) -> dict[str, Path]:
     torch = require_torch()
@@ -471,38 +682,88 @@ def main(argv: Sequence[str] | None = None) -> int:
     chips_path = args.chips_path.resolve()
     run_root = args.run_root.resolve()
     gdal_prefix = args.gdal_prefix.resolve() if args.gdal_prefix is not None else None
-    train_splits = tuple(dict.fromkeys(args.train_split))
-    query_splits = tuple(dict.fromkeys(args.query_split))
-    gallery_splits = tuple(dict.fromkeys(args.gallery_split))
+    pairs_path = args.pairs_path.resolve() if args.pairs_path is not None else None
+    train_pairs_path = (
+        args.train_pairs_path.resolve() if args.train_pairs_path is not None else pairs_path
+    )
+    train_splits = normalize_multi_arg(args.train_split, default=("train",))
+    query_splits = normalize_multi_arg(args.query_split, default=("val", "test"))
+    gallery_splits = normalize_multi_arg(args.gallery_split, default=("val", "test"))
+    modalities = normalize_multi_arg(args.modality, default=("PAN",))
     eval_splits = tuple(sorted(set(query_splits).union(gallery_splits)))
     device_name, resolved_device_name = resolve_device(torch, args.device)
+    pair_frame = pd.read_parquet(pairs_path) if pairs_path is not None else None
+    train_pair_frame = pd.read_parquet(train_pairs_path) if train_pairs_path is not None else None
 
-    train_dataset = build_dataset(
-        chips_path,
-        splits=train_splits,
-        modalities=tuple(args.modality),
-        limit=args.train_limit,
-        min_chips_per_scene=args.min_chips_per_scene,
-        max_chips_per_scene=args.max_chips_per_scene,
-        gdal_prefix=gdal_prefix,
-        output_dtype=args.output_dtype,
-        clip_min=args.clip_min,
-        clip_max=args.clip_max,
-        scale_max=args.scale_max,
-    )
-    eval_dataset = build_dataset(
-        chips_path,
-        splits=eval_splits,
-        modalities=tuple(args.modality),
-        limit=args.eval_limit,
-        min_chips_per_scene=args.min_chips_per_scene,
-        max_chips_per_scene=args.max_chips_per_scene,
-        gdal_prefix=gdal_prefix,
-        output_dtype=args.output_dtype,
-        clip_min=args.clip_min,
-        clip_max=args.clip_max,
-        scale_max=args.scale_max,
-    )
+    if train_pair_frame is not None:
+        train_dataset, train_pair_frame = build_pair_training_dataset(
+            chips_path,
+            splits=train_splits,
+            modalities=modalities,
+            pair_frame=train_pair_frame,
+            limit=args.train_limit,
+            gdal_prefix=gdal_prefix,
+            output_dtype=args.output_dtype,
+            clip_min=args.clip_min,
+            clip_max=args.clip_max,
+            scale_max=args.scale_max,
+        )
+    else:
+        train_dataset = build_dataset(
+            chips_path,
+            splits=train_splits,
+            modalities=modalities,
+            limit=args.train_limit,
+            min_chips_per_scene=args.min_chips_per_scene,
+            max_chips_per_scene=args.max_chips_per_scene,
+            gdal_prefix=gdal_prefix,
+            output_dtype=args.output_dtype,
+            clip_min=args.clip_min,
+            clip_max=args.clip_max,
+            scale_max=args.scale_max,
+        )
+    if pair_frame is not None:
+        pair_chip_ids = chip_ids_from_pairs(pair_frame)
+        eval_dataset = TrainingChipDataset.from_manifest(
+            chips_path,
+            splits=eval_splits,
+            modalities=modalities,
+            limit=None,
+            gdal_prefix=gdal_prefix,
+            output_dtype=args.output_dtype,
+            clip_min=args.clip_min,
+            clip_max=args.clip_max,
+            scale_max=args.scale_max,
+        )
+        eval_frame = eval_dataset.records_frame()
+        eval_frame = (
+            eval_frame[eval_frame["chip_id"].astype(str).isin(pair_chip_ids)]
+            .reset_index(drop=True)
+        )
+        if eval_frame.empty:
+            raise SystemExit("No evaluation chips overlap with the provided pairs.parquet.")
+
+        eval_dataset = TrainingChipDataset(
+            OnDemandChipDataset(eval_frame, gdal_prefix=gdal_prefix),
+            output_dtype=args.output_dtype,
+            clip_min=args.clip_min,
+            clip_max=args.clip_max,
+            scale_max=args.scale_max,
+        )
+    else:
+        eval_dataset = build_dataset(
+            chips_path,
+            splits=eval_splits,
+            modalities=modalities,
+            limit=args.eval_limit,
+            min_chips_per_scene=args.min_chips_per_scene,
+            max_chips_per_scene=args.max_chips_per_scene,
+            gdal_prefix=gdal_prefix,
+            output_dtype=args.output_dtype,
+            clip_min=args.clip_min,
+            clip_max=args.clip_max,
+            scale_max=args.scale_max,
+        )
     if len(train_dataset) == 0 or len(eval_dataset) == 0:
         raise SystemExit("Train or evaluation dataset is empty after filtering.")
 
@@ -519,6 +780,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         train_images,
         train_records,
         positive_key=args.positive_key,
+        pair_frame=train_pair_frame,
         base_channels=args.base_channels,
         embedding_dim=args.embedding_dim,
         dropout=args.dropout,
@@ -539,15 +801,25 @@ def main(argv: Sequence[str] | None = None) -> int:
         device_name=device_name,
     )
     eval_metadata = pd.DataFrame(eval_records)
-    retrieval_report = evaluate_retrieval(
-        eval_embeddings,
-        eval_metadata,
-        positive_key=args.positive_key,
-        query_splits=query_splits,
-        gallery_splits=gallery_splits,
-        min_positive_center_distance=args.min_positive_center_distance,
-        allow_overlap_positives=args.allow_overlap_positives,
-    )
+    retrieval_report: RetrievalReport | PairRetrievalReport
+    if pair_frame is not None:
+        retrieval_report = evaluate_pair_retrieval(
+            eval_embeddings,
+            eval_metadata,
+            pair_frame,
+            query_splits=query_splits,
+            gallery_splits=gallery_splits,
+        )
+    else:
+        retrieval_report = evaluate_retrieval(
+            eval_embeddings,
+            eval_metadata,
+            positive_key=args.positive_key,
+            query_splits=query_splits,
+            gallery_splits=gallery_splits,
+            min_positive_center_distance=args.min_positive_center_distance,
+            allow_overlap_positives=args.allow_overlap_positives,
+        )
 
     paths = write_outputs(
         model=model,
@@ -577,7 +849,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         f"resize_p95={train_preprocess_report.resize_latency_ms_p95:.2f}"
     )
     print(
-        f"training: emb_dim={args.embedding_dim} "
+        f"training: mode={training_report.train_sampling} "
+        f"emb_dim={args.embedding_dim} "
         f"loss={training_report.loss_initial:.4f}->{training_report.loss_final:.4f} "
         f"images/s={training_report.images_per_second:.2f} "
         f"max_mem_mib={training_report.max_memory_mib:.1f}"
@@ -587,17 +860,38 @@ def main(argv: Sequence[str] | None = None) -> int:
         f"batch_p95={embedding_report.batch_latency_ms_p95:.2f} "
         f"max_mem_mib={embedding_report.max_memory_mib:.1f}"
     )
-    print(
-        f"retrieval: R@1={retrieval_report.recall_at_1:.3f} "
-        f"R@5={retrieval_report.recall_at_5:.3f} "
-        f"R@10={retrieval_report.recall_at_10:.3f} "
-        f"MRR={retrieval_report.mean_reciprocal_rank:.3f}"
-    )
+    print(format_retrieval_summary(retrieval_report))
     print(f"model: {paths['model']}")
     print(f"training_report: {paths['training']}")
     print(f"embedding_report: {paths['embedding']}")
     print(f"retrieval: {paths['retrieval']}")
     return 0
+
+
+def format_retrieval_summary(report: RetrievalReport | PairRetrievalReport) -> str:
+    if isinstance(report, PairRetrievalReport):
+        return (
+            "retrieval_pairs: "
+            f"exact_R@1={report.exact_recall_at_1:.3f} "
+            f"exact_R@5={report.exact_recall_at_5:.3f} "
+            f"exact_R@10={report.exact_recall_at_10:.3f} "
+            f"any_R@1={report.any_recall_at_1:.3f} "
+            f"any_R@5={report.any_recall_at_5:.3f} "
+            f"any_R@10={report.any_recall_at_10:.3f} "
+            f"any_MRR={report.any_mean_reciprocal_rank:.3f} "
+            f"hardneg@1={report.hard_negative_at_1_rate:.3f}"
+        )
+    return (
+        f"retrieval: R@1={report.recall_at_1:.3f} "
+        f"R@5={report.recall_at_5:.3f} "
+        f"R@10={report.recall_at_10:.3f} "
+        f"MRR={report.mean_reciprocal_rank:.3f}"
+    )
+
+
+def normalize_multi_arg(values: Sequence[str] | None, *, default: Sequence[str]) -> tuple[str, ...]:
+    selected = values if values else default
+    return tuple(dict.fromkeys(selected))
 
 
 if __name__ == "__main__":

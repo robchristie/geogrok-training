@@ -13,3 +13,4 @@ wheels/
 /datasets
 /third_party/*
 /tools/spacenet/artifacts/
+/artifacts/*

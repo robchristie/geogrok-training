@@ -158,6 +158,10 @@ After this patch lands, the next high-value work items are:
    the evaluation protocol is stable
 6. expand the torch retrieval baseline to larger train and eval slices once GPU
    throughput is characterized
+7. switch retrieval evaluation from implicit `scene_id` relevance to explicit
+   `pairs.parquet` labels mined from chip ground ROIs
+8. compare scene-coherence and pair-based retrieval separately instead of mixing
+   them into one score
 
 ## Commands
 
@@ -334,3 +338,46 @@ uv run geogrok-run-torch-embedding \
   --device auto \
   --amp
 ```
+
+Build explicit harder retrieval pairs:
+
+```bash
+source .local/gdal-kakadu/env.sh
+uv run geogrok-make-pairs \
+  --chips-path datasets/manifests/spacenet/chips.parquet \
+  --scenes-path datasets/manifests/spacenet/scenes.parquet \
+  --output-root datasets/pairs/spacenet \
+  --modality PAN \
+  --positive-overlap-fraction 0.5 \
+  --weak-overlap-fraction 0.2 \
+  --hard-negative-radius-m 800
+```
+
+Run the torch encoder against explicit pair labels:
+
+```bash
+source .local/gdal-kakadu/env.sh
+uv sync --extra dev --extra train
+uv run geogrok-run-torch-embedding \
+  --chips-path datasets/manifests/spacenet/chips.parquet \
+  --pairs-path datasets/pairs/spacenet/pairs.parquet \
+  --train-pairs-path datasets/pairs/spacenet/pairs.parquet \
+  --train-split train \
+  --query-split train \
+  --gallery-split train \
+  --modality PAN \
+  --train-limit 256 \
+  --image-size 128 \
+  --base-channels 48 \
+  --embedding-dim 128 \
+  --epochs 24 \
+  --steps-per-epoch 48 \
+  --pairs-per-batch 32 \
+  --eval-batch-size 64 \
+  --device auto \
+  --amp
+```
+
+Use `--train-pairs-path` when you want the training objective to match the
+explicit overlap-based retrieval benchmark. Without it, the trainer still uses
+implicit `scene_id` / `capture_id` positives even if evaluation is pair-based.

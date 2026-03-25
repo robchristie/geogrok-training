@@ -12,6 +12,7 @@ dependencies = [
     "numpy>=2.3.0",
     "pandas>=2.3.0",
     "pyarrow>=20.0.0",
+    "shapely>=2.1.2",
 ]
 
 [project.optional-dependencies]
@@ -26,6 +27,7 @@ train = [
 
 [project.scripts]
 geogrok-make-manifests = "geogrok.data.manifests:main"
+geogrok-make-pairs = "geogrok.data.pairs:main"
 geogrok-extract-chips = "geogrok.data.chips:main"
 geogrok-benchmark-chips = "geogrok.data.benchmark:main"
 geogrok-benchmark-training = "geogrok.data.training:benchmark_main"

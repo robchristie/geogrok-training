@@ -29,6 +29,8 @@ The current repo focus is phase 0:
   trainer-facing dataset smoke test
 - [scripts/smoke_training_loop.sh](/nvme/development/geogrok-training/scripts/smoke_training_loop.sh):
   deterministic train/val dry-run loop with per-epoch metrics
+- [scripts/smoke_pairs.sh](/nvme/development/geogrok-training/scripts/smoke_pairs.sh):
+  real-data chip-pair mining smoke test
 - [scripts/smoke_embedding_baseline.sh](/nvme/development/geogrok-training/scripts/smoke_embedding_baseline.sh):
   deterministic embedding and retrieval smoke test
 - [scripts/smoke_learned_embedding.sh](/nvme/development/geogrok-training/scripts/smoke_learned_embedding.sh):
@@ -37,6 +39,8 @@ The current repo focus is phase 0:
   tiny CNN embedding smoke test
 - [scripts/smoke_torch_embedding.sh](/nvme/development/geogrok-training/scripts/smoke_torch_embedding.sh):
   PyTorch GPU embedding smoke test
+- [scripts/smoke_torch_pair_eval.sh](/nvme/development/geogrok-training/scripts/smoke_torch_pair_eval.sh):
+  PyTorch GPU pair-based retrieval smoke test
 - [scripts/smoke_chip_extraction.sh](/nvme/development/geogrok-training/scripts/smoke_chip_extraction.sh):
   optional manifest-to-chip extraction smoke test
 - [src/geogrok/io/raster.py](/nvme/development/geogrok-training/src/geogrok/io/raster.py):
@@ -49,6 +53,8 @@ The current repo focus is phase 0:
   throughput benchmark CLI and reporting
 - [src/geogrok/data/training.py](/nvme/development/geogrok-training/src/geogrok/data/training.py):
   trainer-facing dataset, collation, and training-path benchmark
+- [src/geogrok/data/pairs.py](/nvme/development/geogrok-training/src/geogrok/data/pairs.py):
+  chip ROI extraction and explicit pair-label mining
 - [src/geogrok/training/loop.py](/nvme/development/geogrok-training/src/geogrok/training/loop.py):
   deterministic batching and per-epoch throughput metrics
 - [src/geogrok/training/baseline.py](/nvme/development/geogrok-training/src/geogrok/training/baseline.py):
@@ -271,6 +277,17 @@ Generate bootstrap manifests from the current SpaceNet metadata:
 
 ```bash
 uv run geogrok-make-manifests
+```
+
+Build harder retrieval pairs from chip ground ROIs:
+
+```bash
+source .local/gdal-kakadu/env.sh
+uv run geogrok-make-pairs \
+  --chips-path datasets/manifests/spacenet/chips.parquet \
+  --scenes-path datasets/manifests/spacenet/scenes.parquet \
+  --output-root datasets/pairs/spacenet \
+  --modality PAN
 ```
 
 Smoke test on a small slice:
@@ -531,6 +548,50 @@ throughput numbers, but on the current harder retrieval protocol it does not yet
 beat the deterministic baseline. That makes it a useful control, not yet a
 replacement.
 
+## Pair Mining
+
+The repo now has an explicit pair-mining stage for harder retrieval protocols.
+Instead of treating every chip from the same raster scene as positive, it:
+
+- geolocates chip windows into real-world ground ROIs using raster georeferencing
+  or RPC metadata
+- works in local metric coordinates per city
+- mines overlapping cross-asset positives
+- mines spatially nearby non-overlap hard negatives
+- writes reusable pair labels to parquet
+
+Run it with:
+
+```bash
+source .local/gdal-kakadu/env.sh
+uv run geogrok-make-pairs \
+  --chips-path datasets/manifests/spacenet/chips.parquet \
+  --scenes-path datasets/manifests/spacenet/scenes.parquet \
+  --output-root datasets/pairs/spacenet \
+  --modality PAN \
+  --positive-overlap-fraction 0.5 \
+  --weak-overlap-fraction 0.2 \
+  --hard-negative-radius-m 800
+```
+
+Outputs:
+
+- `datasets/pairs/spacenet/chip_rois.parquet`
+- `datasets/pairs/spacenet/asset_pairs.parquet`
+- `datasets/pairs/spacenet/pairs.parquet`
+- `datasets/pairs/spacenet/summary.json`
+
+Smoke test on real mirrored data:
+
+```bash
+./scripts/smoke_pairs.sh
+```
+
+Current status: the smoke protocol on Jacksonville PAN scenes mined explicit
+`positive_exact`, `positive_weak`, and `negative_hard` rows from real chip ROIs.
+The latest run produced 240 chip ROIs, 4 overlapping asset pairs, and 146
+labeled chip pairs: 8 exact positives, 14 weak positives, and 124 hard negatives.
+
 ## CNN Embedding Baseline
 
 The first real learned image encoder keeps the same harder retrieval protocol
@@ -667,6 +728,70 @@ on the RTX 3090 produced `R@1=0.135`, `R@5=0.229`, `R@10=0.302`, and
 `MRR=0.195`, with training throughput around `12.4k images/s` and peak GPU
 memory under `300 MiB`.
 
+## Torch Pair Evaluation
+
+The torch runner can now evaluate against explicit chip-pair labels from
+`pairs.parquet` instead of using `scene_id` as an implicit relevance signal.
+This is a materially harder protocol because it measures:
+
+- `positive_exact`: strong cross-asset spatial overlap
+- `positive_weak`: moderate cross-asset spatial overlap
+- `negative_hard`: nearby but non-overlapping chip pairs
+
+Run it with:
+
+```bash
+source .local/gdal-kakadu/env.sh
+uv run geogrok-run-torch-embedding \
+  --chips-path datasets/manifests/spacenet/chips.parquet \
+  --pairs-path datasets/pairs/spacenet/pairs.parquet \
+  --train-pairs-path datasets/pairs/spacenet/pairs.parquet \
+  --train-split train \
+  --query-split train \
+  --gallery-split train \
+  --modality PAN \
+  --train-limit 256 \
+  --image-size 128 \
+  --base-channels 48 \
+  --embedding-dim 128 \
+  --epochs 24 \
+  --steps-per-epoch 48 \
+  --pairs-per-batch 32 \
+  --eval-batch-size 64 \
+  --device auto \
+  --amp
+```
+
+When `--pairs-path` is set, `retrieval.json` switches to pair-based metrics:
+
+- `exact_recall_at_1/5/10`
+- `any_recall_at_1/5/10`
+- `exact_mean_reciprocal_rank`
+- `any_mean_reciprocal_rank`
+- `hard_negative_at_1_rate`
+- `hard_negative_in_top_5_rate`
+
+When `--train-pairs-path` is also set, the contrastive trainer stops building
+positives from `scene_id` or `capture_id` groups and instead samples
+`positive_exact` / `positive_weak` rows directly from `pairs.parquet`. This is
+the right mode when you want the training objective to match the overlap-based
+evaluation protocol.
+
+Smoke test on real mirrored data:
+
+```bash
+./scripts/smoke_torch_pair_eval.sh
+```
+
+Current status: on the small Jacksonville smoke pair set, the latest torch run
+on the RTX 3090 now trains on explicit positive pairs as well as evaluating on
+them. That smoke run produced `exact_R@1=0.625`, `exact_R@5=1.000`,
+`exact_R@10=1.000`, `any_R@1=0.650`, `any_R@5=0.900`, `any_R@10=0.900`,
+`any_MRR=0.751`, and `hardneg@1=0.000`, with `train_sampling=explicit_pairs`
+over 11 deduplicated positive training pairs. Treat that as a wiring check, not
+as a benchmark claim: the smoke protocol is still `train -> train` on a tiny
+pair set, so it is intentionally optimistic.
+
 ## Optional Chip Extraction
 
 If you need a materialized chip corpus for benchmarking or later cache
@@ -692,5 +817,5 @@ The next intended repo work after phase 0 is:
 
 1. mirror selected imagery into `datasets/spacenet.ai/`
 2. extend manifests with view-angle and off-nadir details
-3. build out the torch retrieval baseline with harder positives and larger eval sets
+3. use `pairs.parquet` as the default retrieval benchmark contract
 4. add the first dense-task baseline on on-demand PAN chips
