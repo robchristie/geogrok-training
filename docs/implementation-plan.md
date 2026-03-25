@@ -393,3 +393,15 @@ That script trains on Jacksonville `train` overlap pairs and evaluates on
 Omaha/UCSD `val/test` pairs with capped per-asset chip counts. Track that
 metric as the first honest retrieval generalization baseline, and keep the
 Jacksonville train/train pair smoke only as a fast plumbing regression check.
+
+Add a frozen pretrained benchmark on the same held-out pair set before moving
+to remote-sensing-specific foundation models:
+
+```bash
+./scripts/smoke_pretrained_benchmark.sh
+```
+
+This gives a direct control comparison between the custom PAN encoder and a few
+generic RGB/ImageNet encoders under identical pair labels and eval splits. The
+first useful reference model is currently `resnet50`; use it as the bar that
+new learned PAN models should clear on the held-out pair protocol.

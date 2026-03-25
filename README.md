@@ -43,6 +43,8 @@ The current repo focus is phase 0:
   PyTorch GPU pair-based retrieval smoke test
 - [scripts/smoke_torch_pair_holdout.sh](/nvme/development/geogrok-training/scripts/smoke_torch_pair_holdout.sh):
   PyTorch GPU held-out pair-based retrieval smoke test
+- [scripts/smoke_pretrained_benchmark.sh](/nvme/development/geogrok-training/scripts/smoke_pretrained_benchmark.sh):
+  frozen pretrained encoder benchmark on the held-out pair protocol
 - [scripts/smoke_chip_extraction.sh](/nvme/development/geogrok-training/scripts/smoke_chip_extraction.sh):
   optional manifest-to-chip extraction smoke test
 - [src/geogrok/io/raster.py](/nvme/development/geogrok-training/src/geogrok/io/raster.py):
@@ -69,6 +71,8 @@ The current repo focus is phase 0:
   tiny learned PAN image encoder baseline
 - [src/geogrok/retrieval/torch_encoder.py](/nvme/development/geogrok-training/src/geogrok/retrieval/torch_encoder.py):
   GPU-capable PyTorch PAN retrieval encoder baseline
+- [src/geogrok/retrieval/pretrained_benchmark.py](/nvme/development/geogrok-training/src/geogrok/retrieval/pretrained_benchmark.py):
+  frozen pretrained encoder benchmark runner
 - [src/geogrok/data/chips.py](/nvme/development/geogrok-training/src/geogrok/data/chips.py):
   optional chip extraction CLI
 - [src/geogrok/io/gdal_env.py](/nvme/development/geogrok-training/src/geogrok/io/gdal_env.py):
@@ -95,6 +99,9 @@ Install the optional training extra for GPU-backed retrieval work:
 ```bash
 uv sync --extra dev --extra train
 ```
+
+That extra now includes both `torch` and `torchvision`, which the repo uses
+for the frozen pretrained encoder benchmark.
 
 ## GDAL + Kakadu
 
@@ -821,6 +828,63 @@ rows and 856 held-out eval chips. That is the more honest baseline to track
 for generalization. The large gap between this and the Jacksonville train/train
 smoke is expected and useful: it tells you the model is still leaning heavily
 on local structure rather than learning a strong cross-region retrieval space.
+
+## Pretrained Benchmark
+
+The repo can now benchmark a few frozen generic pretrained encoders on the same
+held-out PAN chip set and score them against the same `pairs.parquet`
+contract. This is intended as a control benchmark before moving to remote
+sensing foundation models or teacher-student alignment.
+
+Run it with:
+
+```bash
+source .local/gdal-kakadu/env.sh
+uv sync --extra dev --extra train
+uv run geogrok-benchmark-pretrained \
+  --chips-path datasets/manifests/spacenet/chips.parquet \
+  --pairs-path datasets/pairs/spacenet/pairs.parquet \
+  --query-split val \
+  --query-split test \
+  --gallery-split val \
+  --gallery-split test \
+  --modality PAN \
+  --eval-limit 512 \
+  --batch-size 64 \
+  --model resnet18 \
+  --model resnet50 \
+  --model vit_b_16 \
+  --device auto \
+  --amp
+```
+
+The current frozen controls are:
+
+- `resnet18`
+- `resnet50`
+- `vit_b_16`
+
+These are RGB/ImageNet-pretrained models. PAN chips are repeated to 3 channels,
+resized to `224 x 224`, and normalized with ImageNet mean/std before
+embedding. Outputs are written under one run root with per-model artifacts plus
+`summary.json` and `summary.parquet`.
+
+Smoke test on real mirrored data:
+
+```bash
+./scripts/smoke_pretrained_benchmark.sh
+```
+
+Latest held-out smoke result on the RTX 3090 over 505 eval chips:
+
+- `resnet50`: `exact_R@10=0.604`, `any_R@10=0.535`, `any_MRR=0.369`
+- `resnet18`: `exact_R@10=0.490`, `any_R@10=0.476`, `any_MRR=0.306`
+- `vit_b_16`: `exact_R@10=0.470`, `any_R@10=0.438`, `any_MRR=0.290`
+
+That result matters. It says the current tiny custom PAN encoder is not yet a
+competitive baseline: even frozen generic RGB-pretrained models beat it
+comfortably on the held-out pair protocol. `resnet50` is the best current
+control and should be the reference point for the next model iteration.
 
 ## Optional Chip Extraction
 
