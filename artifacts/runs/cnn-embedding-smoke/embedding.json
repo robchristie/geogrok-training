@@ -1,0 +1,8 @@
+{
+  "elapsed_seconds": 0.09328016301151365,
+  "embed_latency_ms_mean": 0.9715996032658344,
+  "embed_latency_ms_p95": 1.0790780121169519,
+  "embedding_dim": 64,
+  "samples": 96,
+  "samples_per_second": 1029.157721220434
+}

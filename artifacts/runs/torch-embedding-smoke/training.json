@@ -1,0 +1,20 @@
+{
+  "amp_enabled": true,
+  "batch_latency_ms_mean": 4.98874571611749,
+  "batch_latency_ms_p95": 4.641189466929063,
+  "batch_size": 64,
+  "device": "cuda",
+  "device_name": "NVIDIA GeForce RTX 3090",
+  "elapsed_seconds": 5.947193427942693,
+  "epochs": 24,
+  "images_per_second": 12397.108130633756,
+  "loss_best": 0.3864476680755615,
+  "loss_final": 0.7417981624603271,
+  "loss_initial": 4.471832275390625,
+  "max_memory_mib": 201.10107421875,
+  "pairs_per_batch": 32,
+  "steps_per_epoch": 48,
+  "steps_per_second": 193.70481454115244,
+  "train_samples": 256,
+  "train_scenes": 76
+}

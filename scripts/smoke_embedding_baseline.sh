@@ -18,20 +18,24 @@ source "$ENV_SCRIPT"
 set -u
 
 uv run geogrok-make-manifests \
-  --limit-assets 8 \
   --output-root "$MANIFEST_ROOT"
 
 uv run geogrok-run-embedding-baseline \
   --chips-path "$MANIFEST_ROOT/chips.parquet" \
   --run-root "$RUN_ROOT" \
-  --split train \
+  --query-split val \
+  --query-split test \
+  --gallery-split val \
+  --gallery-split test \
   --modality PAN \
-  --limit 16 \
+  --limit 96 \
+  --max-chips-per-scene 4 \
   --output-dtype float32 \
   --clip-min 0 \
   --clip-max 2047 \
   --scale-max 2047 \
-  --positive-key scene_id
+  --positive-key scene_id \
+  --min-positive-center-distance 1024
 
 uv run python - <<'PY' "$RUN_ROOT"
 from __future__ import annotations

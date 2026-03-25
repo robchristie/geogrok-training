@@ -11,17 +11,10 @@ from typing import Literal
 import numpy as np
 import pandas as pd
 
+from geogrok.data.runtime import OnDemandChipDataset
 from geogrok.data.training import TrainingChipDataset
 
 DEFAULT_RUN_ROOT = Path("artifacts/runs/embedding-baseline")
-
-
-@dataclass(frozen=True)
-class EmbeddingTiming:
-    read_ms: float
-    transform_ms: float
-    embed_ms: float
-    total_ms: float
 
 
 @dataclass(frozen=True)
@@ -43,6 +36,10 @@ class EmbeddingBenchmarkReport:
 @dataclass(frozen=True)
 class RetrievalReport:
     positive_key: str
+    query_splits: tuple[str, ...]
+    gallery_splits: tuple[str, ...]
+    query_count: int
+    gallery_count: int
     queries_evaluated: int
     recall_at_1: float
     recall_at_5: float
@@ -69,7 +66,7 @@ class SimplePanEmbedder:
         coarse = self.coarse_grid * self.coarse_grid
         return coarse + coarse + self.intensity_bins + self.profile_bins + self.profile_bins
 
-    def embed(self, image: np.ndarray) -> np.ndarray:
+    def features(self, image: np.ndarray) -> np.ndarray:
         if image.ndim != 3:
             raise ValueError(f"Expected image in (C, H, W), got shape {image.shape}.")
 
@@ -91,10 +88,12 @@ class SimplePanEmbedder:
         row_profile = reduce_profile(pan.mean(axis=1), self.profile_bins)
         col_profile = reduce_profile(pan.mean(axis=0), self.profile_bins)
 
-        embedding = np.concatenate(
+        return np.concatenate(
             (coarse, coarse_grad, histogram, row_profile, col_profile), dtype=np.float32
         )
-        return l2_normalize(embedding)
+
+    def embed(self, image: np.ndarray) -> np.ndarray:
+        return l2_normalize(self.features(image))
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -116,7 +115,17 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--split",
         action="append",
         default=["train"],
-        help="Split to include. Repeat to add more splits.",
+        help="Default split set used for both query and gallery when explicit sets are omitted.",
+    )
+    parser.add_argument(
+        "--query-split",
+        action="append",
+        help="Query split to evaluate. Repeat to add more splits.",
+    )
+    parser.add_argument(
+        "--gallery-split",
+        action="append",
+        help="Gallery split to evaluate. Repeat to add more splits.",
     )
     parser.add_argument(
         "--modality",
@@ -124,7 +133,24 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=["PAN"],
         help="Modality to include. Repeat to add more modalities.",
     )
-    parser.add_argument("--limit", type=int, default=64)
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=128,
+        help="Maximum total chips after balanced scene sampling.",
+    )
+    parser.add_argument(
+        "--max-chips-per-scene",
+        type=int,
+        default=4,
+        help="Maximum chips to keep per scene before embedding.",
+    )
+    parser.add_argument(
+        "--min-chips-per-scene",
+        type=int,
+        default=2,
+        help="Minimum chips per scene required for retrieval evaluation.",
+    )
     parser.add_argument("--output-dtype", default="float32")
     parser.add_argument("--clip-min", type=float, default=0.0)
     parser.add_argument("--clip-max", type=float, default=2047.0)
@@ -134,7 +160,60 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         choices=("scene_id", "capture_id"),
         default="scene_id",
     )
+    parser.add_argument(
+        "--min-positive-center-distance",
+        type=float,
+        default=1024.0,
+        help="Minimum center distance in pixels for a valid positive match.",
+    )
+    parser.add_argument(
+        "--allow-overlap-positives",
+        action="store_true",
+        help="Allow overlapping chips to count as positives.",
+    )
     return parser.parse_args(argv)
+
+
+def build_dataset(
+    chips_path: Path,
+    *,
+    splits: Sequence[str],
+    modalities: Sequence[str],
+    limit: int | None,
+    min_chips_per_scene: int,
+    max_chips_per_scene: int | None,
+    gdal_prefix: Path | None,
+    output_dtype: str,
+    clip_min: float | None,
+    clip_max: float | None,
+    scale_max: float | None,
+) -> TrainingChipDataset:
+    base_dataset = TrainingChipDataset.from_manifest(
+        chips_path,
+        splits=tuple(splits),
+        modalities=tuple(modalities),
+        limit=None,
+        gdal_prefix=gdal_prefix,
+        output_dtype=output_dtype,
+        clip_min=clip_min,
+        clip_max=clip_max,
+        scale_max=scale_max,
+    )
+    selected_frame = balanced_subset(
+        base_dataset.records_frame(),
+        group_key="scene_id",
+        min_per_group=min_chips_per_scene,
+        max_per_group=max_chips_per_scene,
+        limit=limit,
+    )
+    selected_runtime = OnDemandChipDataset(selected_frame, gdal_prefix=gdal_prefix)
+    return TrainingChipDataset(
+        selected_runtime,
+        output_dtype=output_dtype,
+        clip_min=clip_min,
+        clip_max=clip_max,
+        scale_max=scale_max,
+    )
 
 
 def embed_dataset(
@@ -167,6 +246,10 @@ def embed_dataset(
                 "city": sample.record.city,
                 "modality": sample.record.modality,
                 "local_path": str(sample.record.local_path),
+                "x0": sample.record.x0,
+                "y0": sample.record.y0,
+                "width": sample.record.width,
+                "height": sample.record.height,
             }
         )
         embeddings.append(embedding)
@@ -199,12 +282,20 @@ def evaluate_retrieval(
     metadata: pd.DataFrame,
     *,
     positive_key: Literal["scene_id", "capture_id"],
+    query_splits: Sequence[str],
+    gallery_splits: Sequence[str],
+    min_positive_center_distance: float,
+    allow_overlap_positives: bool,
 ) -> RetrievalReport:
     if len(embeddings) != len(metadata):
         raise ValueError("Embedding matrix and metadata row count must match.")
     if len(embeddings) == 0:
         return RetrievalReport(
             positive_key=positive_key,
+            query_splits=tuple(query_splits),
+            gallery_splits=tuple(gallery_splits),
+            query_count=0,
+            gallery_count=0,
             queries_evaluated=0,
             recall_at_1=0.0,
             recall_at_5=0.0,
@@ -212,26 +303,69 @@ def evaluate_retrieval(
             mean_reciprocal_rank=0.0,
         )
 
-    matrix = np.asarray(embeddings, dtype=np.float32)
-    matrix = row_normalize(matrix)
-    similarity = matrix @ matrix.T
-    np.fill_diagonal(similarity, -np.inf)
+    frame = metadata.reset_index(drop=True).copy()
+    frame["positive_label"] = frame[positive_key].fillna("null").astype(str)
+    frame["split_normalized"] = frame["split"].astype(str).str.lower()
 
-    labels = metadata[positive_key].fillna("null").astype(str).tolist()
+    query_tokens = {split.lower() for split in query_splits}
+    gallery_tokens = {split.lower() for split in gallery_splits}
+    query_indices = [
+        int(index)
+        for index in frame.index
+        if frame.iloc[index]["split_normalized"] in query_tokens
+    ]
+    gallery_indices = [
+        int(index)
+        for index in frame.index
+        if frame.iloc[index]["split_normalized"] in gallery_tokens
+    ]
+
+    matrix = row_normalize(np.asarray(embeddings, dtype=np.float32))
+    similarity = matrix @ matrix.T
+    labels = frame["positive_label"].tolist()
     recalls = {1: 0, 5: 0, 10: 0}
     reciprocal_ranks: list[float] = []
     queries_evaluated = 0
 
-    for index, label in enumerate(labels):
+    for index in query_indices:
+        label = labels[index]
         positives = [
             candidate
-            for candidate, candidate_label in enumerate(labels)
-            if candidate_label == label and candidate != index
+            for candidate in gallery_indices
+            if labels[candidate] == label
+            and candidate != index
+            and is_valid_positive_pair(
+                frame.iloc[index],
+                frame.iloc[candidate],
+                min_center_distance=min_positive_center_distance,
+                allow_overlap=allow_overlap_positives,
+            )
         ]
         if not positives:
             continue
 
-        ranking = np.argsort(-similarity[index])
+        allowed_gallery = [
+            candidate
+            for candidate in gallery_indices
+            if candidate != index
+            and (
+                labels[candidate] != label
+                or is_valid_positive_pair(
+                    frame.iloc[index],
+                    frame.iloc[candidate],
+                    min_center_distance=min_positive_center_distance,
+                    allow_overlap=allow_overlap_positives,
+                )
+            )
+        ]
+        if not allowed_gallery:
+            continue
+
+        ranking = sorted(
+            allowed_gallery,
+            key=lambda candidate: float(similarity[index, candidate]),
+            reverse=True,
+        )
         first_positive_rank = None
         for rank, candidate in enumerate(ranking, start=1):
             if candidate in positives:
@@ -249,6 +383,10 @@ def evaluate_retrieval(
     if queries_evaluated == 0:
         return RetrievalReport(
             positive_key=positive_key,
+            query_splits=tuple(query_splits),
+            gallery_splits=tuple(gallery_splits),
+            query_count=len(query_indices),
+            gallery_count=len(gallery_indices),
             queries_evaluated=0,
             recall_at_1=0.0,
             recall_at_5=0.0,
@@ -258,12 +396,104 @@ def evaluate_retrieval(
 
     return RetrievalReport(
         positive_key=positive_key,
+        query_splits=tuple(query_splits),
+        gallery_splits=tuple(gallery_splits),
+        query_count=len(query_indices),
+        gallery_count=len(gallery_indices),
         queries_evaluated=queries_evaluated,
         recall_at_1=recalls[1] / queries_evaluated,
         recall_at_5=recalls[5] / queries_evaluated,
         recall_at_10=recalls[10] / queries_evaluated,
         mean_reciprocal_rank=sum(reciprocal_ranks) / len(reciprocal_ranks),
     )
+
+
+def balanced_subset(
+    frame: pd.DataFrame,
+    *,
+    group_key: str,
+    min_per_group: int,
+    max_per_group: int | None,
+    limit: int | None,
+) -> pd.DataFrame:
+    if frame.empty:
+        return frame.copy()
+    if min_per_group <= 0:
+        raise ValueError("min_per_group must be positive.")
+    if max_per_group is not None and max_per_group <= 0:
+        raise ValueError("max_per_group must be positive when provided.")
+    if max_per_group is not None and max_per_group < min_per_group:
+        raise ValueError("max_per_group cannot be smaller than min_per_group.")
+    if limit is not None and limit < min_per_group:
+        raise ValueError("limit cannot be smaller than min_per_group.")
+
+    groups: list[pd.DataFrame] = []
+    for _, group in frame.groupby(group_key, sort=True, dropna=False):
+        ordered = group.sort_values(["split", "city", "chip_id"]).reset_index(drop=True)
+        if max_per_group is not None:
+            ordered = ordered.head(max_per_group)
+        if len(ordered) >= min_per_group:
+            groups.append(ordered)
+
+    if limit is not None:
+        max_groups = max(1, limit // min_per_group)
+        groups = groups[:max_groups]
+
+    selected_rows: list[pd.Series] = []
+    position = 0
+    while True:
+        progress = False
+        for group in groups:
+            if position < len(group):
+                selected_rows.append(group.iloc[position])
+                progress = True
+                if limit is not None and len(selected_rows) >= limit:
+                    return pd.DataFrame(selected_rows).reset_index(drop=True)
+        if not progress:
+            break
+        position += 1
+    return pd.DataFrame(selected_rows).reset_index(drop=True)
+
+
+def is_valid_positive_pair(
+    query_row: pd.Series,
+    candidate_row: pd.Series,
+    *,
+    min_center_distance: float,
+    allow_overlap: bool,
+) -> bool:
+    if not allow_overlap and windows_overlap(query_row, candidate_row):
+        return False
+    if center_distance(query_row, candidate_row) < min_center_distance:
+        return False
+    return True
+
+
+def windows_overlap(left: pd.Series, right: pd.Series) -> bool:
+    left_x0 = int(left["x0"])
+    left_y0 = int(left["y0"])
+    left_x1 = left_x0 + int(left["width"])
+    left_y1 = left_y0 + int(left["height"])
+
+    right_x0 = int(right["x0"])
+    right_y0 = int(right["y0"])
+    right_x1 = right_x0 + int(right["width"])
+    right_y1 = right_y0 + int(right["height"])
+
+    return (
+        left_x0 < right_x1
+        and right_x0 < left_x1
+        and left_y0 < right_y1
+        and right_y0 < left_y1
+    )
+
+
+def center_distance(left: pd.Series, right: pd.Series) -> float:
+    left_cx = float(left["x0"]) + float(left["width"]) / 2.0
+    left_cy = float(left["y0"]) + float(left["height"]) / 2.0
+    right_cx = float(right["x0"]) + float(right["width"]) / 2.0
+    right_cy = float(right["y0"]) + float(right["height"]) / 2.0
+    return float(np.hypot(left_cx - right_cx, left_cy - right_cy))
 
 
 def pooled_grid(image: np.ndarray, rows: int, cols: int) -> np.ndarray:
@@ -340,12 +570,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     chips_path = args.chips_path.resolve()
     run_root = args.run_root.resolve()
     gdal_prefix = args.gdal_prefix.resolve() if args.gdal_prefix is not None else None
+    query_splits = tuple(args.query_split) if args.query_split else tuple(args.split)
+    gallery_splits = tuple(args.gallery_split) if args.gallery_split else tuple(args.split)
+    selected_splits = tuple(sorted(set(query_splits).union(gallery_splits)))
 
-    dataset = TrainingChipDataset.from_manifest(
+    dataset = build_dataset(
         chips_path,
-        splits=tuple(args.split),
+        splits=selected_splits,
         modalities=tuple(args.modality),
         limit=args.limit,
+        min_chips_per_scene=args.min_chips_per_scene,
+        max_chips_per_scene=args.max_chips_per_scene,
         gdal_prefix=gdal_prefix,
         output_dtype=args.output_dtype,
         clip_min=args.clip_min,
@@ -361,6 +596,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         embeddings,
         metadata,
         positive_key=args.positive_key,
+        query_splits=query_splits,
+        gallery_splits=gallery_splits,
+        min_positive_center_distance=args.min_positive_center_distance,
+        allow_overlap_positives=args.allow_overlap_positives,
     )
     paths = write_outputs(
         embeddings=embeddings,
@@ -372,6 +611,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     print(f"chips: {chips_path}")
     print(f"samples: {benchmark.samples}")
+    print(
+        f"protocol: query_splits={query_splits} gallery_splits={gallery_splits} "
+        f"queries={retrieval.query_count} gallery={retrieval.gallery_count}"
+    )
     print(f"embedding_dim: {benchmark.embedding_dim}")
     print(f"samples/s: {benchmark.samples_per_second:.2f}")
     print(

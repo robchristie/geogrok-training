@@ -1,0 +1,12 @@
+{
+  "elapsed_seconds": 0.007069805986247957,
+  "epochs": 8,
+  "loss_best": 1.2213940620422363,
+  "loss_final": 2.9511220455169678,
+  "loss_initial": 7.00300407409668,
+  "pairs_per_batch": 12,
+  "pairs_per_second": 108630.98669099237,
+  "steps_per_epoch": 8,
+  "steps_per_second": 9052.582224249365,
+  "train_scenes": 48
+}

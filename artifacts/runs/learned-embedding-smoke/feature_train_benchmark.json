@@ -1,0 +1,14 @@
+{
+  "elapsed_seconds": 1.574295561062172,
+  "feature_dim": 176,
+  "feature_latency_ms_mean": 7.992396080226172,
+  "feature_latency_ms_p95": 8.800571988103911,
+  "read_latency_ms_mean": 7.563206567283487,
+  "read_latency_ms_p95": 8.215765788918361,
+  "samples": 96,
+  "samples_per_second": 60.979654884645115,
+  "total_latency_ms_mean": 16.370193673841033,
+  "total_latency_ms_p95": 17.592635558685288,
+  "transform_latency_ms_mean": 0.8138287097002225,
+  "transform_latency_ms_p95": 1.472874777391553
+}

@@ -1,0 +1,12 @@
+{
+  "batch_latency_ms_mean": 94.29693751735613,
+  "batch_latency_ms_p95": 115.60823326581158,
+  "batch_size": 64,
+  "device": "cuda",
+  "device_name": "NVIDIA GeForce RTX 3090",
+  "elapsed_seconds": 0.1886560870334506,
+  "embedding_dim": 128,
+  "max_memory_mib": 296.8701171875,
+  "samples": 96,
+  "samples_per_second": 508.8624571280239
+}

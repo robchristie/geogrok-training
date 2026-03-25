@@ -154,6 +154,10 @@ After this patch lands, the next high-value work items are:
    being parsed
 3. add the first retrieval baseline evaluation runner on on-demand PAN chips
 4. add the first dense-task baseline evaluation runner on on-demand PAN chips
+5. replace the tiny learned retrieval control with a stronger PAN encoder once
+   the evaluation protocol is stable
+6. expand the torch retrieval baseline to larger train and eval slices once GPU
+   throughput is characterized
 
 ## Commands
 
@@ -231,11 +235,102 @@ Run the deterministic embedding baseline:
 ```bash
 source .local/gdal-kakadu/env.sh
 uv run geogrok-run-embedding-baseline \
-  --limit 64 \
+  --query-split val \
+  --query-split test \
+  --gallery-split val \
+  --gallery-split test \
+  --limit 128 \
   --modality PAN \
+  --max-chips-per-scene 4 \
+  --min-chips-per-scene 2 \
   --output-dtype float32 \
   --clip-min 0 \
   --clip-max 2047 \
   --scale-max 2047 \
-  --positive-key scene_id
+  --positive-key scene_id \
+  --min-positive-center-distance 1024
+```
+
+Run the shallow learned embedding baseline:
+
+```bash
+source .local/gdal-kakadu/env.sh
+uv run geogrok-run-learned-embedding \
+  --train-split train \
+  --query-split val \
+  --query-split test \
+  --gallery-split val \
+  --gallery-split test \
+  --train-limit 128 \
+  --eval-limit 128 \
+  --modality PAN \
+  --max-chips-per-scene 4 \
+  --min-chips-per-scene 2 \
+  --output-dtype float32 \
+  --clip-min 0 \
+  --clip-max 2047 \
+  --scale-max 2047 \
+  --positive-key scene_id \
+  --min-positive-center-distance 1024 \
+  --embedding-dim 64
+```
+
+Run the tiny CNN embedding baseline:
+
+```bash
+source .local/gdal-kakadu/env.sh
+uv run geogrok-run-cnn-embedding \
+  --train-split train \
+  --query-split val \
+  --query-split test \
+  --gallery-split val \
+  --gallery-split test \
+  --train-limit 128 \
+  --eval-limit 128 \
+  --modality PAN \
+  --max-chips-per-scene 4 \
+  --min-chips-per-scene 2 \
+  --output-dtype float32 \
+  --clip-min 0 \
+  --clip-max 2047 \
+  --scale-max 2047 \
+  --positive-key scene_id \
+  --min-positive-center-distance 1024 \
+  --image-size 64 \
+  --conv1-channels 8 \
+  --conv2-channels 16 \
+  --embedding-dim 64
+```
+
+Run the PyTorch embedding baseline:
+
+```bash
+source .local/gdal-kakadu/env.sh
+uv sync --extra dev --extra train
+uv run geogrok-run-torch-embedding \
+  --train-split train \
+  --query-split val \
+  --query-split test \
+  --gallery-split val \
+  --gallery-split test \
+  --train-limit 256 \
+  --eval-limit 128 \
+  --modality PAN \
+  --max-chips-per-scene 4 \
+  --min-chips-per-scene 2 \
+  --output-dtype float32 \
+  --clip-min 0 \
+  --clip-max 2047 \
+  --scale-max 2047 \
+  --positive-key scene_id \
+  --min-positive-center-distance 1024 \
+  --image-size 128 \
+  --base-channels 48 \
+  --embedding-dim 128 \
+  --epochs 24 \
+  --steps-per-epoch 48 \
+  --pairs-per-batch 32 \
+  --eval-batch-size 64 \
+  --device auto \
+  --amp
 ```

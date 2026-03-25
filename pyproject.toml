@@ -20,6 +20,9 @@ dev = [
     "ruff>=0.12.0",
     "ty>=0.0.25",
 ]
+train = [
+    "torch>=2.8.0",
+]
 
 [project.scripts]
 geogrok-make-manifests = "geogrok.data.manifests:main"
@@ -28,6 +31,9 @@ geogrok-benchmark-chips = "geogrok.data.benchmark:main"
 geogrok-benchmark-training = "geogrok.data.training:benchmark_main"
 geogrok-run-baseline = "geogrok.training.baseline:main"
 geogrok-run-embedding-baseline = "geogrok.retrieval.baseline:main"
+geogrok-run-learned-embedding = "geogrok.retrieval.learned:main"
+geogrok-run-cnn-embedding = "geogrok.retrieval.cnn:main"
+geogrok-run-torch-embedding = "geogrok.retrieval.torch_encoder:main"
 
 [tool.ruff]
 exclude = ["third_party", ".build", ".local", "tools/spacenet"]

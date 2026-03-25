@@ -31,6 +31,12 @@ The current repo focus is phase 0:
   deterministic train/val dry-run loop with per-epoch metrics
 - [scripts/smoke_embedding_baseline.sh](/nvme/development/geogrok-training/scripts/smoke_embedding_baseline.sh):
   deterministic embedding and retrieval smoke test
+- [scripts/smoke_learned_embedding.sh](/nvme/development/geogrok-training/scripts/smoke_learned_embedding.sh):
+  shallow learned embedding smoke test
+- [scripts/smoke_cnn_embedding.sh](/nvme/development/geogrok-training/scripts/smoke_cnn_embedding.sh):
+  tiny CNN embedding smoke test
+- [scripts/smoke_torch_embedding.sh](/nvme/development/geogrok-training/scripts/smoke_torch_embedding.sh):
+  PyTorch GPU embedding smoke test
 - [scripts/smoke_chip_extraction.sh](/nvme/development/geogrok-training/scripts/smoke_chip_extraction.sh):
   optional manifest-to-chip extraction smoke test
 - [src/geogrok/io/raster.py](/nvme/development/geogrok-training/src/geogrok/io/raster.py):
@@ -49,6 +55,12 @@ The current repo focus is phase 0:
   framework-light dry-run training runner
 - [src/geogrok/retrieval/baseline.py](/nvme/development/geogrok-training/src/geogrok/retrieval/baseline.py):
   deterministic PAN embedding and retrieval baseline
+- [src/geogrok/retrieval/learned.py](/nvme/development/geogrok-training/src/geogrok/retrieval/learned.py):
+  shallow contrastive projection baseline over PAN features
+- [src/geogrok/retrieval/cnn.py](/nvme/development/geogrok-training/src/geogrok/retrieval/cnn.py):
+  tiny learned PAN image encoder baseline
+- [src/geogrok/retrieval/torch_encoder.py](/nvme/development/geogrok-training/src/geogrok/retrieval/torch_encoder.py):
+  GPU-capable PyTorch PAN retrieval encoder baseline
 - [src/geogrok/data/chips.py](/nvme/development/geogrok-training/src/geogrok/data/chips.py):
   optional chip extraction CLI
 - [src/geogrok/io/gdal_env.py](/nvme/development/geogrok-training/src/geogrok/io/gdal_env.py):
@@ -68,6 +80,12 @@ Repo checks:
 uv run ruff check .
 uv run ty check
 uv run --extra dev pytest -q
+```
+
+Install the optional training extra for GPU-backed retrieval work:
+
+```bash
+uv sync --extra dev --extra train
 ```
 
 ## GDAL + Kakadu
@@ -415,6 +433,8 @@ The first retrieval baseline is intentionally simple and deterministic. It:
 - computes a handcrafted embedding from coarse pooled intensity, gradient, and
   profile features
 - evaluates nearest-neighbor retrieval by `scene_id` or `capture_id`
+- supports separate query and gallery split definitions
+- balances the sampled set across scenes and enforces spatially separated positives
 - logs read, transform, embedding, and total latency
 
 Run it with:
@@ -423,14 +443,20 @@ Run it with:
 source .local/gdal-kakadu/env.sh
 uv run geogrok-run-embedding-baseline \
   --chips-path datasets/manifests/spacenet/chips.parquet \
-  --split train \
+  --query-split val \
+  --query-split test \
+  --gallery-split val \
+  --gallery-split test \
   --modality PAN \
-  --limit 64 \
+  --limit 128 \
+  --max-chips-per-scene 4 \
+  --min-chips-per-scene 2 \
   --output-dtype float32 \
   --clip-min 0 \
   --clip-max 2047 \
   --scale-max 2047 \
-  --positive-key scene_id
+  --positive-key scene_id \
+  --min-positive-center-distance 1024
 ```
 
 Outputs:
@@ -445,6 +471,201 @@ Smoke test on real mirrored data:
 ```bash
 ./scripts/smoke_embedding_baseline.sh
 ```
+
+## Learned Embedding Baseline
+
+The next-step learned baseline keeps the same retrieval protocol but replaces
+the handcrafted embedding with:
+
+- fixed PAN feature extraction from the deterministic baseline
+- a shallow linear projection
+- contrastive training on same-scene positive pairs from the train split
+- evaluation on the harder `val/test` query-gallery protocol
+
+Run it with:
+
+```bash
+source .local/gdal-kakadu/env.sh
+uv run geogrok-run-learned-embedding \
+  --chips-path datasets/manifests/spacenet/chips.parquet \
+  --train-split train \
+  --query-split val \
+  --query-split test \
+  --gallery-split val \
+  --gallery-split test \
+  --modality PAN \
+  --train-limit 128 \
+  --eval-limit 128 \
+  --max-chips-per-scene 4 \
+  --min-chips-per-scene 2 \
+  --output-dtype float32 \
+  --clip-min 0 \
+  --clip-max 2047 \
+  --scale-max 2047 \
+  --positive-key scene_id \
+  --min-positive-center-distance 1024 \
+  --embedding-dim 64 \
+  --epochs 20 \
+  --steps-per-epoch 16 \
+  --pairs-per-batch 16
+```
+
+Outputs:
+
+- `artifacts/runs/learned-embedding-baseline/model.npz`
+- `artifacts/runs/learned-embedding-baseline/train_features.npy`
+- `artifacts/runs/learned-embedding-baseline/eval_embeddings.npy`
+- `artifacts/runs/learned-embedding-baseline/feature_train_benchmark.json`
+- `artifacts/runs/learned-embedding-baseline/feature_eval_benchmark.json`
+- `artifacts/runs/learned-embedding-baseline/training.json`
+- `artifacts/runs/learned-embedding-baseline/retrieval.json`
+
+Smoke test on real mirrored data:
+
+```bash
+./scripts/smoke_learned_embedding.sh
+```
+
+Current status: this shallow learned projection trains correctly and logs useful
+throughput numbers, but on the current harder retrieval protocol it does not yet
+beat the deterministic baseline. That makes it a useful control, not yet a
+replacement.
+
+## CNN Embedding Baseline
+
+The first real learned image encoder keeps the same harder retrieval protocol
+but learns directly from downsampled PAN chips instead of fixed handcrafted
+features. The current implementation is intentionally small:
+
+- mean-downsample each PAN chip to `image_size x image_size`
+- run a 2-layer NumPy CNN with global average pooling
+- train the embedding head contrastively on same-scene positive pairs
+- preserve the same retrieval and throughput reporting used by the earlier
+  baselines
+
+Run it with:
+
+```bash
+source .local/gdal-kakadu/env.sh
+uv run geogrok-run-cnn-embedding \
+  --chips-path datasets/manifests/spacenet/chips.parquet \
+  --train-split train \
+  --query-split val \
+  --query-split test \
+  --gallery-split val \
+  --gallery-split test \
+  --modality PAN \
+  --train-limit 128 \
+  --eval-limit 128 \
+  --max-chips-per-scene 4 \
+  --min-chips-per-scene 2 \
+  --output-dtype float32 \
+  --clip-min 0 \
+  --clip-max 2047 \
+  --scale-max 2047 \
+  --positive-key scene_id \
+  --min-positive-center-distance 1024 \
+  --image-size 64 \
+  --conv1-channels 8 \
+  --conv2-channels 16 \
+  --embedding-dim 64 \
+  --epochs 20 \
+  --steps-per-epoch 16 \
+  --pairs-per-batch 16
+```
+
+Outputs:
+
+- `artifacts/runs/cnn-embedding-baseline/model.npz`
+- `artifacts/runs/cnn-embedding-baseline/train_images.npy`
+- `artifacts/runs/cnn-embedding-baseline/eval_embeddings.npy`
+- `artifacts/runs/cnn-embedding-baseline/train_index.parquet`
+- `artifacts/runs/cnn-embedding-baseline/eval_index.parquet`
+- `artifacts/runs/cnn-embedding-baseline/train_preprocess_benchmark.json`
+- `artifacts/runs/cnn-embedding-baseline/eval_preprocess_benchmark.json`
+- `artifacts/runs/cnn-embedding-baseline/training.json`
+- `artifacts/runs/cnn-embedding-baseline/embedding.json`
+- `artifacts/runs/cnn-embedding-baseline/retrieval.json`
+
+Smoke test on real mirrored data:
+
+```bash
+./scripts/smoke_cnn_embedding.sh
+```
+
+Current status: the tiny CNN baseline is now wired end to end, but on the
+current harder retrieval protocol it still underperforms the deterministic
+baseline. The latest smoke run produced `R@1=0.000`, `R@5=0.062`, `R@10=0.156`,
+and `MRR=0.061`, so this is a real learned baseline, not yet a competitive one.
+
+## Torch Embedding Baseline
+
+The current strongest learned retrieval baseline in the repo uses PyTorch and
+the local GPU. It keeps the same harder retrieval protocol and adds:
+
+- a small convnet encoder trained directly on downsampled PAN chips
+- CUDA execution with optional mixed precision
+- the same manifest sampling, split logic, and retrieval metrics as the earlier
+  baselines
+- explicit training and embedding throughput plus GPU memory reporting
+
+Run it with:
+
+```bash
+source .local/gdal-kakadu/env.sh
+uv run geogrok-run-torch-embedding \
+  --chips-path datasets/manifests/spacenet/chips.parquet \
+  --train-split train \
+  --query-split val \
+  --query-split test \
+  --gallery-split val \
+  --gallery-split test \
+  --modality PAN \
+  --train-limit 256 \
+  --eval-limit 128 \
+  --max-chips-per-scene 4 \
+  --min-chips-per-scene 2 \
+  --output-dtype float32 \
+  --clip-min 0 \
+  --clip-max 2047 \
+  --scale-max 2047 \
+  --positive-key scene_id \
+  --min-positive-center-distance 1024 \
+  --image-size 128 \
+  --base-channels 48 \
+  --embedding-dim 128 \
+  --epochs 24 \
+  --steps-per-epoch 48 \
+  --pairs-per-batch 32 \
+  --eval-batch-size 64 \
+  --device auto \
+  --amp
+```
+
+Outputs:
+
+- `artifacts/runs/torch-embedding-baseline/model.pt`
+- `artifacts/runs/torch-embedding-baseline/train_images.npy`
+- `artifacts/runs/torch-embedding-baseline/eval_embeddings.npy`
+- `artifacts/runs/torch-embedding-baseline/train_index.parquet`
+- `artifacts/runs/torch-embedding-baseline/eval_index.parquet`
+- `artifacts/runs/torch-embedding-baseline/train_preprocess_benchmark.json`
+- `artifacts/runs/torch-embedding-baseline/eval_preprocess_benchmark.json`
+- `artifacts/runs/torch-embedding-baseline/training.json`
+- `artifacts/runs/torch-embedding-baseline/embedding.json`
+- `artifacts/runs/torch-embedding-baseline/retrieval.json`
+
+Smoke test on real mirrored data:
+
+```bash
+./scripts/smoke_torch_embedding.sh
+```
+
+Current status: this is the first learned encoder in the repo that now beats
+the deterministic baseline on the current harder protocol. The latest smoke run
+on the RTX 3090 produced `R@1=0.135`, `R@5=0.229`, `R@10=0.302`, and
+`MRR=0.195`, with training throughput around `12.4k images/s` and peak GPU
+memory under `300 MiB`.
 
 ## Optional Chip Extraction
 
@@ -471,5 +692,5 @@ The next intended repo work after phase 0 is:
 
 1. mirror selected imagery into `datasets/spacenet.ai/`
 2. extend manifests with view-angle and off-nadir details
-3. add the first retrieval baseline on on-demand PAN chips
+3. build out the torch retrieval baseline with harder positives and larger eval sets
 4. add the first dense-task baseline on on-demand PAN chips

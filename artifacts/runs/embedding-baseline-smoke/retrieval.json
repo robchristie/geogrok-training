@@ -1,8 +1,18 @@
 {
-  "mean_reciprocal_rank": 1.0,
+  "gallery_count": 96,
+  "gallery_splits": [
+    "val",
+    "test"
+  ],
+  "mean_reciprocal_rank": 0.14867588876838506,
   "positive_key": "scene_id",
-  "queries_evaluated": 16,
-  "recall_at_1": 1.0,
-  "recall_at_10": 1.0,
-  "recall_at_5": 1.0
+  "queries_evaluated": 96,
+  "query_count": 96,
+  "query_splits": [
+    "val",
+    "test"
+  ],
+  "recall_at_1": 0.0625,
+  "recall_at_10": 0.3020833333333333,
+  "recall_at_5": 0.19791666666666666
 }

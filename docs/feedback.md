@@ -191,5 +191,20 @@ The next sensible step is to enrich manifests and extracted-chip metadata with i
 
 ---
 
-  The next sensible step is to build the first actual trainer-facing dataset wrapper on top of src/geogrok/data/runtime.py: batching, normalization, optional augmentations, and split-aware sampling for a first PAN classification or retrieval baseline.
+  The next step I’d take is to stay on this torch path and make the retrieval benchmark harder rather than jumping models again: larger eval slices, stronger positive definitions than same-scene alone, and view/off-nadir stratification once we enrich the manifests.
 
+
+  The better retrieval targets are:
+
+  1. Same-location across acquisitions or views.
+     This is much stronger than same-raster retrieval. A positive should be a chip covering
+     the same or nearby ground area, but from a different image, time, or view angle.
+  2. Same semantic class or composition.
+     For example: “dense residential blocks”, “container port”, “runway”, “mountain ridge with
+     sparse roads”, “coastal urban edge”. These can come from different scenes entirely.
+  3. Region/object retrieval, not just scene-chip retrieval.
+     If a tile is mixed ocean/urban/mountains, whole-chip similarity gets muddy. Region-level
+     retrieval is closer to analyst intent.
+  4. Hard negatives from the same large scene.
+     This is especially important for your case. Two chips from the same image but different
+     semantics should often be explicit negatives, not automatic positives.
