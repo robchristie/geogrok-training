@@ -25,6 +25,8 @@ from geogrok.retrieval.torch_encoder import filter_pairs_for_records
 DEFAULT_RUN_ROOT = Path("artifacts/runs/pretrained-benchmark")
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
+CLIP_MEAN = (0.48145466, 0.4578275, 0.40821073)
+CLIP_STD = (0.26862954, 0.26130258, 0.27577711)
 
 
 @dataclass(frozen=True)
@@ -35,6 +37,7 @@ class PretrainedModelSpec:
     mean: tuple[float, float, float]
     std: tuple[float, float, float]
     loader: Callable[[Any, Any], Any]
+    encoder_kind: str = "torchvision"
 
 
 @dataclass(frozen=True)
@@ -83,6 +86,39 @@ def require_torchvision() -> Any:
             "Run `uv sync --extra dev --extra train`."
         ) from exc
     return torchvision
+
+
+def require_huggingface_hub() -> Any:
+    try:
+        import huggingface_hub
+    except ModuleNotFoundError as exc:
+        raise SystemExit(
+            "huggingface_hub is not installed in this repo environment. "
+            "Run `uv sync --extra dev --extra train`."
+        ) from exc
+    return huggingface_hub
+
+
+def require_open_clip() -> Any:
+    try:
+        import open_clip
+    except ModuleNotFoundError as exc:
+        raise SystemExit(
+            "open_clip_torch is not installed in this repo environment. "
+            "Run `uv sync --extra dev --extra train`."
+        ) from exc
+    return open_clip
+
+
+def require_timm() -> Any:
+    try:
+        import timm
+    except ModuleNotFoundError as exc:
+        raise SystemExit(
+            "timm is not installed in this repo environment. "
+            "Run `uv sync --extra dev --extra train`."
+        ) from exc
+    return timm
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -183,10 +219,64 @@ def available_model_specs() -> dict[str, PretrainedModelSpec]:
         model.fc = torch.nn.Identity()
         return model
 
+    def load_resnet101(_torch: Any, _torchvision: Any) -> Any:
+        model = models.resnet101(weights=models.ResNet101_Weights.DEFAULT)
+        model.fc = torch.nn.Identity()
+        return model
+
+    def load_resnet152(_torch: Any, _torchvision: Any) -> Any:
+        model = models.resnet152(weights=models.ResNet152_Weights.DEFAULT)
+        model.fc = torch.nn.Identity()
+        return model
+
     def load_vit_b_16(_torch: Any, _torchvision: Any) -> Any:
         model = models.vit_b_16(weights=models.ViT_B_16_Weights.DEFAULT)
         model.heads = torch.nn.Identity()
         return model
+
+    def load_remoteclip_rn50(_torch: Any, _torchvision: Any) -> Any:
+        open_clip = require_open_clip()
+        huggingface_hub = require_huggingface_hub()
+        checkpoint_path = huggingface_hub.hf_hub_download(
+            repo_id="chendelong/RemoteCLIP",
+            filename="RemoteCLIP-RN50.pt",
+        )
+        model, _, _ = open_clip.create_model_and_transforms("RN50", pretrained="openai")
+        checkpoint = _torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+        model.load_state_dict(checkpoint, strict=False)
+        return model
+
+    def load_georsclip_vit_b32(_torch: Any, _torchvision: Any) -> Any:
+        open_clip = require_open_clip()
+        huggingface_hub = require_huggingface_hub()
+        checkpoint_path = huggingface_hub.hf_hub_download(
+            repo_id="Zilun/GeoRSCLIP",
+            filename="ckpt/RS5M_ViT-B-32.pt",
+        )
+        model, _, _ = open_clip.create_model_and_transforms("ViT-B-32", pretrained="openai")
+        checkpoint = _torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+        model.load_state_dict(checkpoint, strict=False)
+        return model
+
+    def load_georsclip_vit_b32_ret2(_torch: Any, _torchvision: Any) -> Any:
+        open_clip = require_open_clip()
+        huggingface_hub = require_huggingface_hub()
+        checkpoint_path = huggingface_hub.hf_hub_download(
+            repo_id="Zilun/GeoRSCLIP",
+            filename="ckpt/RS5M_ViT-B-32_RET-2.pt",
+        )
+        model, _, _ = open_clip.create_model_and_transforms("ViT-B-32", pretrained="openai")
+        checkpoint = _torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+        model.load_state_dict(checkpoint, strict=False)
+        return model
+
+    def load_dinov2_vitb14(_torch: Any, _torchvision: Any) -> Any:
+        timm = require_timm()
+        return timm.create_model("vit_base_patch14_dinov2.lvd142m", pretrained=True, num_classes=0)
+
+    def load_dinov3_vitb16(_torch: Any, _torchvision: Any) -> Any:
+        timm = require_timm()
+        return timm.create_model("vit_base_patch16_dinov3.lvd1689m", pretrained=True, num_classes=0)
 
     return {
         "resnet18": PretrainedModelSpec(
@@ -205,6 +295,22 @@ def available_model_specs() -> dict[str, PretrainedModelSpec]:
             std=IMAGENET_STD,
             loader=load_resnet50,
         ),
+        "resnet101": PretrainedModelSpec(
+            name="resnet101",
+            weights_label="imagenet1k_v2",
+            input_size=224,
+            mean=IMAGENET_MEAN,
+            std=IMAGENET_STD,
+            loader=load_resnet101,
+        ),
+        "resnet152": PretrainedModelSpec(
+            name="resnet152",
+            weights_label="imagenet1k_v2",
+            input_size=224,
+            mean=IMAGENET_MEAN,
+            std=IMAGENET_STD,
+            loader=load_resnet152,
+        ),
         "vit_b_16": PretrainedModelSpec(
             name="vit_b_16",
             weights_label="imagenet1k_swag_e2e_v1",
@@ -212,6 +318,51 @@ def available_model_specs() -> dict[str, PretrainedModelSpec]:
             mean=IMAGENET_MEAN,
             std=IMAGENET_STD,
             loader=load_vit_b_16,
+        ),
+        "remoteclip_rn50": PretrainedModelSpec(
+            name="remoteclip_rn50",
+            weights_label="chendelong/RemoteCLIP:RemoteCLIP-RN50.pt",
+            input_size=224,
+            mean=CLIP_MEAN,
+            std=CLIP_STD,
+            loader=load_remoteclip_rn50,
+            encoder_kind="open_clip",
+        ),
+        "georsclip_vit_b32": PretrainedModelSpec(
+            name="georsclip_vit_b32",
+            weights_label="Zilun/GeoRSCLIP:ckpt/RS5M_ViT-B-32.pt",
+            input_size=224,
+            mean=CLIP_MEAN,
+            std=CLIP_STD,
+            loader=load_georsclip_vit_b32,
+            encoder_kind="open_clip",
+        ),
+        "georsclip_vit_b32_ret2": PretrainedModelSpec(
+            name="georsclip_vit_b32_ret2",
+            weights_label="Zilun/GeoRSCLIP:ckpt/RS5M_ViT-B-32_RET-2.pt",
+            input_size=224,
+            mean=CLIP_MEAN,
+            std=CLIP_STD,
+            loader=load_georsclip_vit_b32_ret2,
+            encoder_kind="open_clip",
+        ),
+        "dinov2_vitb14": PretrainedModelSpec(
+            name="dinov2_vitb14",
+            weights_label="timm:vit_base_patch14_dinov2.lvd142m",
+            input_size=518,
+            mean=IMAGENET_MEAN,
+            std=IMAGENET_STD,
+            loader=load_dinov2_vitb14,
+            encoder_kind="timm",
+        ),
+        "dinov3_vitb16": PretrainedModelSpec(
+            name="dinov3_vitb16",
+            weights_label="timm:vit_base_patch16_dinov3.lvd1689m",
+            input_size=256,
+            mean=IMAGENET_MEAN,
+            std=IMAGENET_STD,
+            loader=load_dinov3_vitb16,
+            encoder_kind="timm",
         ),
     }
 
@@ -378,10 +529,10 @@ def embed_dataset(
             )
             forward_start = perf_counter()
             if autocast_context is None:
-                outputs = model(model_inputs)
+                outputs = forward_model(model, model_inputs, encoder_kind=spec.encoder_kind)
             else:
                 with autocast_context:
-                    outputs = model(model_inputs)
+                    outputs = forward_model(model, model_inputs, encoder_kind=spec.encoder_kind)
             outputs = torch.nn.functional.normalize(outputs, dim=1)
             forward_ms = (perf_counter() - forward_start) * 1000.0
             output_batch = outputs.detach().cpu().numpy().astype(np.float32, copy=False)
@@ -449,6 +600,12 @@ def embed_dataset(
     return matrix, pd.DataFrame(records), report
 
 
+def forward_model(model: Any, model_inputs: Any, *, encoder_kind: str) -> Any:
+    if encoder_kind == "open_clip":
+        return model.encode_image(model_inputs)
+    return model(model_inputs)
+
+
 def write_model_outputs(
     *,
     output_root: Path,
@@ -494,7 +651,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     # Import GDAL before torchvision/Pillow so the Kakadu runtime wins library resolution.
     load_gdal(gdal_prefix)
     _torchvision = require_torchvision()
-    model_names = normalize_multi_arg(args.model, default=("resnet18", "resnet50", "vit_b_16"))
+    model_names = normalize_multi_arg(
+        args.model,
+        default=("resnet50", "remoteclip_rn50", "georsclip_vit_b32_ret2"),
+    )
     query_splits = normalize_multi_arg(args.query_split, default=("val", "test"))
     gallery_splits = normalize_multi_arg(args.gallery_split, default=("val", "test"))
     modalities = normalize_multi_arg(args.modality, default=("PAN",))

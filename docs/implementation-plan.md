@@ -405,3 +405,20 @@ This gives a direct control comparison between the custom PAN encoder and a few
 generic RGB/ImageNet encoders under identical pair labels and eval splits. The
 first useful reference model is currently `resnet50`; use it as the bar that
 new learned PAN models should clear on the held-out pair protocol.
+
+Extend that benchmark with remote-sensing encoders, but keep the comparison
+empirical. The first RS controls currently wired in are `RemoteCLIP RN50` and
+`GeoRSCLIP ViT-B/32 RET-2`, and on the current PAN repeated-to-RGB setup they
+still trail the generic `resnet50` control. Treat that as evidence that PAN
+adaptation matters more than remote-sensing pretraining alone for this specific
+deployment target.
+
+The expanded frozen benchmark now also includes `resnet101`, `resnet152`,
+`dinov2_vitb14`, and `dinov3_vitb16`. The current read is:
+
+- deeper ResNets improve top-k retrieval a bit
+- `dinov3_vitb16` is the strongest generic transformer in this first pass
+- the RS CLIP-family checkpoints still do not beat the best generic controls on PAN
+
+So the benchmark bar is no longer a single model. Use `resnet152` and
+`dinov3_vitb16` as the practical frozen controls for the next phase.

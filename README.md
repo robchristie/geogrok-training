@@ -100,8 +100,9 @@ Install the optional training extra for GPU-backed retrieval work:
 uv sync --extra dev --extra train
 ```
 
-That extra now includes both `torch` and `torchvision`, which the repo uses
-for the frozen pretrained encoder benchmark.
+That extra now includes `torch`, `torchvision`, `open-clip-torch`, and
+`huggingface_hub`, which the repo uses for the frozen pretrained encoder
+benchmark.
 
 ## GDAL + Kakadu
 
@@ -858,16 +859,26 @@ uv run geogrok-benchmark-pretrained \
   --amp
 ```
 
-The current frozen controls are:
+The current frozen controls include both generic and remote-sensing models:
 
-- `resnet18`
 - `resnet50`
-- `vit_b_16`
+- `resnet101`
+- `resnet152`
+- `remoteclip_rn50`
+- `georsclip_vit_b32_ret2`
+- `dinov2_vitb14`
+- `dinov3_vitb16`
 
-These are RGB/ImageNet-pretrained models. PAN chips are repeated to 3 channels,
-resized to `224 x 224`, and normalized with ImageNet mean/std before
-embedding. Outputs are written under one run root with per-model artifacts plus
-`summary.json` and `summary.parquet`.
+For the CLIP-family remote-sensing models, the repo uses official checkpoints
+from Hugging Face:
+
+- `chendelong/RemoteCLIP:RemoteCLIP-RN50.pt`
+- `Zilun/GeoRSCLIP:ckpt/RS5M_ViT-B-32_RET-2.pt`
+
+PAN chips are repeated to 3 channels and resized to `224 x 224`. The
+ImageNet-style models use ImageNet normalization; the CLIP-family models use
+CLIP normalization. Outputs are written under one run root with per-model
+artifacts plus `summary.json` and `summary.parquet`.
 
 Smoke test on real mirrored data:
 
@@ -877,14 +888,24 @@ Smoke test on real mirrored data:
 
 Latest held-out smoke result on the RTX 3090 over 505 eval chips:
 
+- `resnet152`: `exact_R@10=0.624`, `any_R@10=0.542`, `any_MRR=0.356`
+- `resnet101`: `exact_R@10=0.611`, `any_R@10=0.507`, `any_MRR=0.354`
 - `resnet50`: `exact_R@10=0.604`, `any_R@10=0.535`, `any_MRR=0.369`
-- `resnet18`: `exact_R@10=0.490`, `any_R@10=0.476`, `any_MRR=0.306`
-- `vit_b_16`: `exact_R@10=0.470`, `any_R@10=0.438`, `any_MRR=0.290`
+- `dinov3_vitb16`: `exact_R@10=0.591`, `any_R@10=0.524`, `any_MRR=0.375`
+- `remoteclip_rn50`: `exact_R@10=0.564`, `any_R@10=0.490`, `any_MRR=0.281`
+- `dinov2_vitb14`: `exact_R@10=0.523`, `any_R@10=0.472`, `any_MRR=0.324`
+- `georsclip_vit_b32_ret2`: `exact_R@10=0.523`, `any_R@10=0.465`, `any_MRR=0.308`
 
-That result matters. It says the current tiny custom PAN encoder is not yet a
-competitive baseline: even frozen generic RGB-pretrained models beat it
-comfortably on the held-out pair protocol. `resnet50` is the best current
-control and should be the reference point for the next model iteration.
+That result is more nuanced now. On this first PAN repeated-to-RGB setup:
+
+- deeper ResNets help a bit on `R@10`, with `resnet152` now the best top-k model
+- `dinov3_vitb16` is the strongest transformer by `MRR`
+- the first two remote-sensing CLIP checkpoints still trail the best generic controls
+
+So the next model work should still not assume an RS-pretrained model is
+automatically better here; the modality gap is still dominating. The practical
+reference set to beat is now `resnet152` for top-k retrieval and
+`dinov3_vitb16` for early-rank retrieval quality.
 
 ## Optional Chip Extraction
 

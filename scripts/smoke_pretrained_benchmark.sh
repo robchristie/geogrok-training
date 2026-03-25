@@ -9,6 +9,7 @@ PAIRS_ROOT="${PAIRS_ROOT:-$ROOT_DIR/datasets/pairs/spacenet-pretrained-benchmark
 RUN_ROOT="${RUN_ROOT:-$ROOT_DIR/artifacts/runs/pretrained-benchmark-smoke}"
 MAX_CHIPS_PER_ASSET="${MAX_CHIPS_PER_ASSET:-8}"
 EVAL_LIMIT="${EVAL_LIMIT:-512}"
+BATCH_SIZE="${BATCH_SIZE:-16}"
 
 if [[ ! -f "$ENV_SCRIPT" ]]; then
   echo "missing GDAL environment script: $ENV_SCRIPT" >&2
@@ -48,10 +49,14 @@ uv run geogrok-benchmark-pretrained \
   --gallery-split test \
   --modality PAN \
   --eval-limit "$EVAL_LIMIT" \
-  --batch-size 64 \
-  --model resnet18 \
+  --batch-size "$BATCH_SIZE" \
   --model resnet50 \
-  --model vit_b_16 \
+  --model resnet101 \
+  --model resnet152 \
+  --model remoteclip_rn50 \
+  --model georsclip_vit_b32_ret2 \
+  --model dinov2_vitb14 \
+  --model dinov3_vitb16 \
   --device auto \
   --amp
 
