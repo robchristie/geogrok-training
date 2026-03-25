@@ -41,6 +41,8 @@ The current repo focus is phase 0:
   PyTorch GPU embedding smoke test
 - [scripts/smoke_torch_pair_eval.sh](/nvme/development/geogrok-training/scripts/smoke_torch_pair_eval.sh):
   PyTorch GPU pair-based retrieval smoke test
+- [scripts/smoke_torch_pair_holdout.sh](/nvme/development/geogrok-training/scripts/smoke_torch_pair_holdout.sh):
+  PyTorch GPU held-out pair-based retrieval smoke test
 - [scripts/smoke_chip_extraction.sh](/nvme/development/geogrok-training/scripts/smoke_chip_extraction.sh):
   optional manifest-to-chip extraction smoke test
 - [src/geogrok/io/raster.py](/nvme/development/geogrok-training/src/geogrok/io/raster.py):
@@ -777,6 +779,12 @@ positives from `scene_id` or `capture_id` groups and instead samples
 the right mode when you want the training objective to match the overlap-based
 evaluation protocol.
 
+The mined `pairs.parquet` rows now also carry `query_split`,
+`candidate_split`, `query_sensor`, `candidate_sensor`, `query_acq_time`, and
+`candidate_acq_time`, and `summary.json` includes split-aware pair counts. That
+makes it easier to stratify retrieval performance by held-out split without
+re-reading the chip manifest.
+
 Smoke test on real mirrored data:
 
 ```bash
@@ -791,6 +799,28 @@ them. That smoke run produced `exact_R@1=0.625`, `exact_R@5=1.000`,
 over 11 deduplicated positive training pairs. Treat that as a wiring check, not
 as a benchmark claim: the smoke protocol is still `train -> train` on a tiny
 pair set, so it is intentionally optimistic.
+
+Held-out smoke test on real mirrored data:
+
+```bash
+./scripts/smoke_torch_pair_holdout.sh
+```
+
+This script mines a smaller split-aware pair set across Jacksonville
+(`train`), Omaha (`val`), and UCSD (`test`), then trains on `train` pairs and
+evaluates on `val/test`. The default smoke settings are intentionally capped to
+keep runtime reasonable:
+
+- `MAX_CHIPS_PER_ASSET=8`
+- `TRAIN_LIMIT=512`
+
+The latest held-out smoke run on the RTX 3090 produced `exact_R@1=0.005`,
+`exact_R@5=0.055`, `exact_R@10=0.070`, `any_R@1=0.012`, `any_R@5=0.059`,
+`any_R@10=0.076`, `any_MRR=0.042`, and `hardneg@1=0.025`, with 3,505 mined pair
+rows and 856 held-out eval chips. That is the more honest baseline to track
+for generalization. The large gap between this and the Jacksonville train/train
+smoke is expected and useful: it tells you the model is still leaning heavily
+on local structure rather than learning a strong cross-region retrieval space.
 
 ## Optional Chip Extraction
 

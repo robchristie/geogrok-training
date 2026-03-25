@@ -32,6 +32,9 @@ class PairMiningSummary:
     by_label: dict[str, int]
     by_city: dict[str, int]
     by_modality: dict[str, int]
+    by_query_split: dict[str, int]
+    by_candidate_split: dict[str, int]
+    by_split_pair_label: dict[str, int]
 
 
 @dataclass(frozen=True)
@@ -559,8 +562,14 @@ def build_pair_row(
         "candidate_scene_id": str(candidate_row["scene_id"]),
         "query_capture_id": optional_string(query_row.get("capture_id")),
         "candidate_capture_id": optional_string(candidate_row.get("capture_id")),
+        "query_split": str(query_row["split"]),
+        "candidate_split": str(candidate_row["split"]),
         "city": str(query_row["city"]),
         "modality": str(query_row["modality"]),
+        "query_sensor": optional_string(query_row.get("sensor")),
+        "candidate_sensor": optional_string(candidate_row.get("sensor")),
+        "query_acq_time": query_row.get("acq_time"),
+        "candidate_acq_time": candidate_row.get("acq_time"),
         "pair_label": pair_label,
         "pair_group": "positive" if pair_label.startswith("positive") else "negative",
         "time_delta_seconds": as_float(asset_pair["time_delta_seconds"]),
@@ -704,6 +713,31 @@ def build_summary(
         if not pairs.empty
         else pd.Series(dtype="int64")
     )
+    by_query_split = (
+        pairs["query_split"].value_counts().sort_index()
+        if not pairs.empty
+        else pd.Series(dtype="int64")
+    )
+    by_candidate_split = (
+        pairs["candidate_split"].value_counts().sort_index()
+        if not pairs.empty
+        else pd.Series(dtype="int64")
+    )
+    by_split_pair_label = (
+        pairs.groupby(["query_split", "candidate_split", "pair_label"]).size().sort_index()
+        if not pairs.empty
+        else pd.Series(dtype="int64")
+    )
+    split_pair_counts: dict[str, int] = {}
+    for key, value in by_split_pair_label.items():
+        if not isinstance(key, tuple) or len(key) != 3:
+            continue
+        if not isinstance(value, (int, np.integer)):
+            continue
+        query_split, candidate_split, pair_label = key
+        split_pair_counts[
+            f"{str(query_split)}->{str(candidate_split)}:{str(pair_label)}"
+        ] = int(value)
     return PairMiningSummary(
         scenes=int(len(scenes)),
         chips=int(len(chips)),
@@ -714,6 +748,9 @@ def build_summary(
         by_label={str(key): int(value) for key, value in by_label.items()},
         by_city={str(key): int(value) for key, value in by_city.items()},
         by_modality={str(key): int(value) for key, value in by_modality.items()},
+        by_query_split={str(key): int(value) for key, value in by_query_split.items()},
+        by_candidate_split={str(key): int(value) for key, value in by_candidate_split.items()},
+        by_split_pair_label=split_pair_counts,
     )
 
 

@@ -150,3 +150,7 @@ def test_build_pairs_emits_positive_and_hard_negative_rows():
     labels = set(pairs["pair_label"].tolist())
     assert "positive_exact" in labels
     assert "negative_hard" in labels
+    assert set(pairs["query_split"]) == {"train", "val"}
+    assert set(pairs["candidate_split"]) == {"train", "val"}
+    assert set(pairs["query_sensor"]) == {"WV3"}
+    assert set(pairs["candidate_sensor"]) == {"WV3"}

@@ -381,3 +381,15 @@ uv run geogrok-run-torch-embedding \
 Use `--train-pairs-path` when you want the training objective to match the
 explicit overlap-based retrieval benchmark. Without it, the trainer still uses
 implicit `scene_id` / `capture_id` positives even if evaluation is pair-based.
+
+Add a held-out pair smoke path and keep it separate from the train/train wiring
+smoke. The useful default is:
+
+```bash
+./scripts/smoke_torch_pair_holdout.sh
+```
+
+That script trains on Jacksonville `train` overlap pairs and evaluates on
+Omaha/UCSD `val/test` pairs with capped per-asset chip counts. Track that
+metric as the first honest retrieval generalization baseline, and keep the
+Jacksonville train/train pair smoke only as a fast plumbing regression check.
