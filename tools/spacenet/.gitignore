@@ -8,8 +8,5 @@ wheels/
 
 # Virtual environments
 .venv
-.build/
-.local/
-/datasets
-/third_party/*
-/tools/spacenet/artifacts/
+
+/artifacts/
