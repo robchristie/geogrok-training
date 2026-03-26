@@ -165,6 +165,8 @@ Frontend tooling is split intentionally:
 
 - `svelte-check` validates Svelte template and TypeScript correctness
 - `Biome` handles linting, formatting, and import organization
+- Vite host allowlisting now includes `lv426.yutani.tech` by default for this
+  node, and can be extended with `VITE_ALLOWED_HOSTS=host1,host2`
 
 Optional `pykdu` integration for HTJ2K/J2C review artifacts:
 

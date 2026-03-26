@@ -902,6 +902,27 @@ Each entry uses the same structure:
     - `cd web && npm run lint`
     - `cd web && npm run format:check`
 
+## Entry 31: Vite Allowed Host Configuration For Remote UI Access
+
+- `Implemented`: explicit Vite host allowlisting for the remote browser hostname
+  used on this headless node
+- `Reason`: when the UI was opened through `lv426.yutani.tech`, Vite rejected
+  the request because the hostname was not in `server.allowedHosts`
+- `Detail`:
+  - updated `web/vite.config.ts`
+    - added `server.allowedHosts`
+    - included `lv426.yutani.tech` as a repo default
+    - added `VITE_ALLOWED_HOSTS=host1,host2` support for future hostname
+      changes without another code edit
+  - updated `README.md` to mention the allowlist behavior
+- `Results`:
+  - the SvelteKit app can now be opened through `lv426.yutani.tech` without the
+    Vite blocked-host error
+  - frontend validation still passed:
+    - `cd web && npm run check`
+    - `cd web && npm run lint`
+    - `cd web && npm run format:check`
+
 ## Current Read
 
 The most important current conclusions are:
