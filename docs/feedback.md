@@ -209,6 +209,613 @@ The next sensible step is to enrich manifests and extracted-chip metadata with i
      This is especially important for your case. Two chips from the same image but different
      semantics should often be explicit negatives, not automatic positives.
 
+---
+
+
+• Yes. I think this is the right time to do it, and I would design it as an observability and
+  review system, not just a gallery.
+
+  The repo now has enough structure that a UI can be genuinely useful:
+
+  - stable chip manifests
+  - explicit pair labels
+  - benchmark outputs
+  - model artifacts
+  - performance metrics
+  - a real notion of “interesting failures”
+
+  Because of that, I’d optimize for three things from day one:
+
+  1. fast visual inspection of chips and pairs
+  2. direct linkage to benchmark results and failure modes
+  3. a path to human review / annotation later without redesigning the stack
+
+  ## Recommended Architecture
+
+  I would use SvelteKit for the UI, but I would not make SvelteKit responsible for raster
+  access or analytics logic.
+
+  The clean split is:
+
+  - Python backend
+      - owns GDAL/Kakadu
+      - reads manifests, pairs, benchmark artifacts
+      - renders quicklook images from source chips
+      - computes review tables and outlier candidates
+  - SvelteKit frontend
+      - owns browsing, filtering, pair inspection, run comparison, annotation UX
+      - talks to the Python backend over JSON + image endpoints
+
+  Reason: all the difficult project-specific logic already lives in Python:
+
+  - manifest semantics
+  - pair protocol
+  - benchmark outputs
+  - GDAL-backed chip extraction
+  - teacher/student metrics
+
+  Trying to recreate that in Node would be the wrong split.
+
+  ## Suggested High-Level Layout
+
+  I’d add something like:
+
+  src/geogrok/obs/
+    api.py
+    quicklook.py
+    review_tables.py
+    run_index.py
+    annotations.py
+
+  web/
+    package.json
+    svelte.config.js
+    vite.config.ts
+    src/routes/...
+
+  Or, if you want to keep the frontend clearly separated:
+
+  apps/review-ui/
+  apps/review-api/
+
+  But given the repo is Python-first, I’d probably keep:
+
+  - Python API inside src/geogrok/obs/
+  - SvelteKit app under web/
+
+  ## Backend Design
+
+  I’d use FastAPI for the review API. It’s the pragmatic choice here.
+
+  ### Why FastAPI
+
+  - simple JSON/image endpoints
+  - easy local dev
+  - easy future auth if needed
+  - easy reuse of existing Python code
+  - easy to mount DuckDB / SQLite / parquet logic
+
+  ### Backend Responsibilities
+
+  1. Quicklook rendering
+     Endpoints like:
+      - GET /api/chips/:chip_id/image
+      - GET /api/pairs/:pair_id/image-strip
+      - GET /api/assets/:asset_id/overview
+
+     These should:
+      - read the source chip on demand via existing raster code
+      - normalize for display
+      - return PNG or JPEG quicklooks
+      - support display params like:
+          - stretch=percentile
+          - clip_min
+          - clip_max
+          - invert=false
+          - size=256
+  2. Manifest / pair browsing
+     Endpoints like:
+      - GET /api/chips
+      - GET /api/pairs
+      - GET /api/chips/:chip_id
+      - GET /api/pairs/:pair_id
+
+     These should expose:
+      - chip metadata
+      - pair label
+      - city
+      - split
+      - sensor
+      - acquisition time
+      - overlap metrics
+      - center distance
+      - local path provenance
+  3. Run and benchmark indexing
+     Endpoints like:
+      - GET /api/runs
+      - GET /api/runs/:run_id
+      - GET /api/runs/:run_id/failures
+      - GET /api/runs/:run_id/query/:chip_id
+
+     These should expose:
+      - retrieval summaries
+      - training metrics
+      - teacher/student comparisons
+      - top-k retrieved candidates for a query
+      - failure classification
+  4. Review / annotation persistence
+     Endpoints like:
+      - POST /api/reviews/pair
+      - POST /api/reviews/chip
+      - GET /api/reviews/queue
+      - GET /api/reviews/export
+
+     This is where human labels eventually live.
+
+  ## Storage Design
+
+  This is the part that matters most if you want it to scale cleanly.
+
+  I would use three storage layers.
+
+  ### 1. Immutable analytical tables: Parquet
+
+  Keep these as parquet:
+
+  - manifests
+  - pairs
+  - benchmark outputs
+  - review candidate tables
+  - nearest-neighbor result tables
+
+  Reason:
+
+  - already aligned with repo
+  - easy to generate from Python
+  - efficient for batch filtering / materialization
+
+  ### 2. Mutable review state: SQLite
+
+  Use SQLite for:
+
+  - user annotations
+  - review status
+  - tags
+  - issue flags
+  - queue state
+  - free-text notes
+
+  Reason:
+
+  - mutable
+  - local-first
+  - easy for SvelteKit + FastAPI
+  - much better fit than constantly rewriting parquet
+
+  I would not use parquet for mutable human annotations.
+
+  ### 3. Cached quicklooks: filesystem cache
+
+  Store rendered display images under something like:
+
+  artifacts/observability/quicklooks/
+    chips/<chip_id>.png
+    pairs/<pair_key>.jpg
+    assets/<asset_id>.jpg
+
+  Reason:
+
+  - avoid re-rendering every request
+  - make the UI feel immediate
+  - keep source raster reads available when needed, but not mandatory for every click
+
+  ## Data Model I’d Use
+
+  ### Chip record
+
+  Fields:
+
+  - chip_id
+  - asset_id
+  - scene_id
+  - capture_id
+  - city
+  - split
+  - sensor
+  - modality
+  - chip_x
+  - chip_y
+  - chip_width
+  - chip_height
+  - acq_time
+  - local_path
+
+  ### Pair record
+
+  Fields:
+
+  - pair_id or deterministic composite key
+  - query_chip_id
+  - candidate_chip_id
+  - pair_label
+  - pair_group
+  - overlap_fraction
+  - overlap_iou
+  - center_distance_m
+  - time_delta_seconds
+  - query_split
+  - candidate_split
+  - city
+  - query_sensor
+  - candidate_sensor
+
+  ### Run record
+
+  Fields:
+
+  - run_id
+  - run_type
+      - pretrained_benchmark
+      - pan_adapt_benchmark
+      - torch_embedding
+  - timestamp
+  - config_path
+  - summary_path
+  - teacher_model
+  - student_model
+  - metrics
+
+  ### Review annotation
+
+  Fields:
+
+  - review_id
+  - target_type
+      - chip
+      - pair
+      - query_result
+  - target_id
+  - status
+      - unreviewed
+      - confirmed
+      - incorrect_label
+      - interesting
+      - needs_followup
+  - tags
+  - note
+  - reviewer
+  - created_at
+  - updated_at
+
+  ## UI Design
+
+  I would build four main views first.
+
+  ### 1. Dataset Browser
+
+  Purpose:
+
+  - inspect chips by city, split, sensor, modality, asset, acquisition time
+
+  UI:
+
+  - left filter panel
+  - chip grid in main panel
+  - detail drawer on click
+
+  Good filters:
+
+  - city
+  - split
+  - sensor
+  - modality
+  - asset
+  - acquisition date range
+  - pair participation
+  - annotation state
+
+  This gives you the “show me example chips from category X” workflow.
+
+  ### 2. Pair Inspector
+
+  Purpose:
+
+  - inspect positive and negative pairs directly
+
+  UI:
+
+  - side-by-side chips
+  - metadata strip in the middle or top
+  - label summary:
+      - positive_exact
+      - positive_weak
+      - negative_hard
+  - overlap / distance / time delta shown prominently
+  - buttons:
+      - confirm label
+      - mark suspicious
+      - tag cloud/occlusion/artifact
+      - add note
+
+  This is probably the highest-value first page.
+
+  ### 3. Run Explorer
+
+  Purpose:
+
+  - inspect benchmark outputs and model behavior
+
+  UI:
+
+  - choose run
+  - choose query chip
+  - show:
+      - query chip
+      - top-k retrieved chips
+      - whether each is true positive / hard negative / unlabeled
+      - similarity scores
+      - rank positions
+  - toggle between teacher and student results
+
+  This is where you answer:
+
+  - “why did this fail?”
+  - “what kinds of errors is the student making?”
+  - “what is the teacher seeing that the student is not?”
+
+  ### 4. Outlier Review Queue
+
+  Purpose:
+
+  - surface the most informative examples automatically
+
+  Queues I would generate:
+
+  - false negatives
+      - positive_exact or positive_weak pairs with low model similarity
+  - false positives
+      - negative_hard pairs with high model similarity
+  - teacher-student disagreement
+      - teacher high, student low
+      - student high, teacher low
+  - label suspicion
+      - supposed positives that look obviously wrong
+      - supposed negatives that look obviously overlapping
+  - data quality
+      - clouds
+      - severe occlusion
+      - striping/artifacts
+      - extreme exposure
+
+  This is the part that naturally turns into human annotation later.
+
+  ## What “Observability” Should Mean Here
+
+  I think you want observability at three levels.
+
+  ### A. Data observability
+
+  Questions:
+
+  - what chips are actually in train / val / test?
+  - what do positive_exact and negative_hard really look like?
+  - what are the weird edge cases?
+
+  ### B. Model observability
+
+  Questions:
+
+  - which positives are missed?
+  - which hard negatives are being confused?
+  - how do teacher and student differ?
+  - are errors clustered by city / sensor / time delta / overlap band?
+
+  ### C. Pipeline observability
+
+  Questions:
+
+  - what was the run config?
+  - what metrics changed?
+  - what was the throughput?
+  - what artifacts belong to this run?
+
+  The UI should support all three, but I would build them in that order:
+
+  1. data observability
+  2. model observability
+  3. annotation workflow
+
+  ## Review Table Materialization
+
+  A key design decision: do not compute everything on every page load.
+
+  I would add Python jobs that materialize review tables under something like:
+
+  artifacts/observability/
+    run_index.parquet
+    review_candidates/
+      run_<id>_false_negatives.parquet
+      run_<id>_false_positives.parquet
+      run_<id>_teacher_student_disagreement.parquet
+
+  Then the UI can stay fast and simple.
+
+  Each row in a review candidate table should include:
+
+  - query_chip_id
+  - candidate_chip_id
+  - pair_label
+  - rank
+  - similarity
+  - teacher_similarity
+  - student_similarity
+  - error_type
+  - city
+  - split
+  - time_delta_seconds
+  - overlap_fraction
+
+  That gives you sortable, filterable queues without recomputing from raw run outputs every
+  time.
+
+  ## Quicklook Rendering Strategy
+
+  For PAN imagery, display matters a lot. If you just dump raw 11/12-bit grayscale to PNG, the
+  UI will often look poor.
+
+  I’d support:
+
+  - percentile stretch, default
+  - optional histogram equalization later
+  - invert toggle
+  - consistent display normalization for side-by-side comparison
+  - cached renderings
+
+  And I’d keep the rendering logic in Python, not JS.
+
+  A simple endpoint contract:
+
+  - GET /api/chips/:chip_id/image?mode=percentile&pmin=2&pmax=98&size=256
+
+  For pairs:
+
+  - GET /api/pairs/:pair_key/composite?size=256
+    returns a stitched strip for quick scanning in tables.
+
+  ## Annotation Design
+
+  You said you eventually want human annotation. I would design for that now, even if the
+  first version is light.
+
+  Minimum annotation features:
+
+  - mark pair label as:
+      - correct
+      - incorrect
+      - uncertain
+  - add issue tags:
+      - cloud
+      - shadow
+      - water
+      - seasonal change
+      - geometry issue
+      - low quality
+  - add free-text note
+
+  Later, this can expand to:
+
+  - corrected relevance
+  - task-specific tags
+  - building presence / road presence / port / runway etc.
+  - adjudication workflow
+
+  The key thing is: make annotation append-only and auditable.
+
+  ## Recommended First Implementation Scope
+
+  I would not build the full review system in one pass.
+
+  I’d do this in three phases.
+
+  ### Phase 1: Read-only observability
+
+  Build:
+
+  - SvelteKit shell
+  - Python review API
+  - chip browser
+  - pair inspector
+  - run explorer for one benchmark type
+  - on-demand quicklook rendering + cache
+
+  This gets immediate value.
+
+  ### Phase 2: Outlier queues
+
+  Build:
+
+  - review candidate materialization
+  - false positive / false negative queues
+  - teacher-student disagreement views
+  - filtering and sorting
+
+  This makes the UI useful for model iteration.
+
+  ### Phase 3: Human review
+
+  Build:
+
+  - SQLite-backed annotations
+  - review actions in UI
+  - queue state
+  - export reviewed examples
+
+  This makes it part of the training loop.
+
+  ## My Concrete Recommendation
+
+  If I were implementing this repo next, I’d build:
+
+  Backend
+
+  - src/geogrok/obs/api.py
+  - src/geogrok/obs/quicklook.py
+  - src/geogrok/obs/review_tables.py
+  - src/geogrok/obs/run_index.py
+  - src/geogrok/obs/annotations.py
+
+  Frontend
+
+  - web/src/routes/
+      - /chips
+      - /pairs
+      - /runs
+      - /runs/[runId]
+      - /review
+
+  Initial API endpoints
+
+  - GET /api/chips
+  - GET /api/chips/:chip_id
+  - GET /api/chips/:chip_id/image
+  - GET /api/pairs
+  - GET /api/pairs/:pair_key
+  - GET /api/pairs/:pair_key/images
+  - GET /api/runs
+  - GET /api/runs/:run_id
+  - GET /api/runs/:run_id/failures
+
+  ## The Most Important Design Choice
+
+  The most important design choice is this:
+
+  make the UI driven by explicit review tables and run artifacts, not by ad hoc filesystem
+  browsing.
+
+  That gives you:
+
+  - reproducibility
+  - explainability
+  - easy queue generation
+  - a clean path to annotation
+  - low-friction comparison between runs
+
+  Without that, the UI tends to turn into a pretty image browser with weak analytical value.
+
+  ## My Recommendation In One Sentence
+
+  Use SvelteKit as a thin, fast review UI over a Python observability API that serves
+  quicklooks, run artifacts, pair tables, and annotation state, with parquet for immutable
+  analytics, SQLite for mutable review data, and review queues built from benchmark failures
+  as the core product.
+
+  If you want, I can take the next step and scaffold this concretely:
+
+  1. docs/observability-plan.md
+  2. Python review API skeleton
+  3. SvelteKit app skeleton
+  4. first read-only pages: /chips, /pairs, /runs
+
 
 
   The next step I’d take is to make the mined negatives part of evaluation as well: add a small adversarial-negative retrieval report so we can measure whether training is actually improving rejection of these confusable pairs instead of only watching aggregate R@K drift.

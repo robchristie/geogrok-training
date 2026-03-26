@@ -15,6 +15,10 @@ The current repo focus is phase 0:
 
 - [docs/implementation-plan.md](/nvme/development/geogrok-training/docs/implementation-plan.md):
   staged implementation plan
+- [docs/observability-plan.md](/nvme/development/geogrok-training/docs/observability-plan.md):
+  concrete observability architecture and reference-only reuse plan
+- [docs/NOTEBOOK.md](/nvme/development/geogrok-training/docs/NOTEBOOK.md):
+  permanent engineering notebook of implementation steps, reasons, and results
 - [scripts/build_gdal_kakadu.sh](/nvme/development/geogrok-training/scripts/build_gdal_kakadu.sh):
   repo-local GDAL + Kakadu build
 - [scripts/check_gdal_kakadu.sh](/nvme/development/geogrok-training/scripts/check_gdal_kakadu.sh):
@@ -77,10 +81,21 @@ The current repo focus is phase 0:
   frozen pretrained encoder benchmark runner
 - [src/geogrok/retrieval/pan_adapt_benchmark.py](/nvme/development/geogrok-training/src/geogrok/retrieval/pan_adapt_benchmark.py):
   teacher-student PAN adaptation benchmark runner
+- [src/geogrok/obs/run_index.py](/nvme/development/geogrok-training/src/geogrok/obs/run_index.py):
+  observability run indexing over `artifacts/runs/`
+- [src/geogrok/obs/api.py](/nvme/development/geogrok-training/src/geogrok/obs/api.py):
+  observability API with live chip, pair, run, and failure-review endpoints
+- [src/geogrok/obs/review_tables.py](/nvme/development/geogrok-training/src/geogrok/obs/review_tables.py):
+  failure and disagreement queue derivation from saved benchmark embeddings and
+  pair labels
+- [src/geogrok/obs/annotations.py](/nvme/development/geogrok-training/src/geogrok/obs/annotations.py):
+  SQLite-backed pair review state for observability surfaces
 - [src/geogrok/data/chips.py](/nvme/development/geogrok-training/src/geogrok/data/chips.py):
   optional chip extraction CLI
 - [src/geogrok/io/gdal_env.py](/nvme/development/geogrok-training/src/geogrok/io/gdal_env.py):
   Python-side GDAL runtime activation helper
+- [web/README.md](/nvme/development/geogrok-training/web/README.md):
+  SvelteKit observability UI scaffold
 
 ## Python setup
 
@@ -107,6 +122,124 @@ uv sync --extra dev --extra train
 That extra now includes `torch`, `torchvision`, `open-clip-torch`, and
 `huggingface_hub`, which the repo uses for the frozen pretrained encoder
 benchmark.
+
+Install the optional observability API extra:
+
+```bash
+uv sync --extra dev --extra obs
+```
+
+That extra provides `fastapi` and `uvicorn` for the review API scaffold.
+
+## Frontend setup
+
+The SvelteKit observability UI lives under [web/](/nvme/development/geogrok-training/web/).
+
+Fastest local dev path:
+
+```bash
+./scripts/run_obs_dev.sh
+```
+
+That starts both:
+
+- the Python observability API on `http://127.0.0.1:8787`
+- the SvelteKit UI on `http://0.0.0.0:5174`
+
+and tails both logs in one terminal until `Ctrl-C`.
+
+On this headless node, the launcher is intended for LAN access. It prints a
+LAN-friendly browser URL when it can detect one.
+
+Install dependencies and run the frontend checks:
+
+```bash
+cd web
+npm install
+npm run check
+npm run lint
+npm run format:check
+```
+
+Frontend tooling is split intentionally:
+
+- `svelte-check` validates Svelte template and TypeScript correctness
+- `Biome` handles linting, formatting, and import organization
+
+Optional `pykdu` integration for HTJ2K/J2C review artifacts:
+
+```bash
+./scripts/install_reference_pykdu.sh
+./scripts/check_reference_pykdu.sh
+```
+
+This uses the reference submodule at
+`reference/geogrok/libs/py/pykdu` as the source of truth and installs it into
+this repo environment as an editable dependency. It does not copy `pykdu` into
+this repo.
+
+Optional `kakadujs` browser decoder integration:
+
+```bash
+./scripts/sync_reference_kakadujs.sh
+```
+
+This uses the reference build flow under `reference/geogrok/`, then copies
+`kakadujs.js` and `kakadujs.wasm` into `web/static/kakadujs/` for the Svelte
+observability UI.
+
+Run the observability API locally:
+
+```bash
+uv run --extra obs geogrok-obs-api
+```
+
+Run the full local observability stack:
+
+```bash
+./scripts/run_obs_dev.sh
+```
+
+Pre-build review artifacts without starting the API:
+
+```bash
+uv run --extra obs geogrok-build-review-artifacts --limit 16
+```
+
+Current live review surfaces:
+
+- `/review`
+  - annotation-aware analyst worklist for unreviewed pairs, failures, and
+    disagreements, with a dedicated bookmarked section
+- `/chips`
+  - manifest-backed chip browser that prefers cached review artifacts and falls
+    back to source-rendered quicklooks
+- `/pairs`
+  - labeled pair inspection with annotation-aware filtering, artifact-backed
+    pair review imagery, linked black/white/gamma controls for decoded `.j2c`
+    views, inline review actions, and bookmark filtering
+- `/runs`
+  - run summary list
+- `/runs/[runId]`
+  - run-specific false-negative, false-positive, and pan-adapt
+    teacher-student disagreement queues derived from saved embeddings and
+    explicit pair labels, with inline pair review actions, review-state
+    filtering, and bookmark-only slices
+
+Review artifact runtime notes:
+
+- review artifacts are stored under `artifacts/observability/review_artifacts/`
+- current artifact generation prefers `.j2c` via `pykdu` when available
+- `./scripts/install_reference_pykdu.sh` is the supported local Option A path
+  for enabling `pykdu` from the reference submodule
+- on this node, `pykdu` is now installed in the repo environment and the API is
+  generating `.j2c` review artifacts from real PAN chips
+- browser-side HTJ2K decode is enabled when `web/static/kakadujs/kakadujs.js`
+  and `web/static/kakadujs/kakadujs.wasm` are present
+- on this node, the browser-side decoder assets are now present and the review
+  runtime reports `kakadujs_assets_available=true`
+- review artifacts are for human observability only and must not be used as
+  training inputs
 
 ## GDAL + Kakadu
 

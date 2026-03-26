@@ -1,0 +1,18 @@
+{
+	"/": [],
+	"/chips": [
+		"src/routes/chips/+page.ts"
+	],
+	"/pairs": [
+		"src/routes/pairs/+page.ts"
+	],
+	"/review": [
+		"src/routes/review/+page.ts"
+	],
+	"/runs": [
+		"src/routes/runs/+page.ts"
+	],
+	"/runs/[runId]": [
+		"src/routes/runs/[runId]/+page.ts"
+	]
+}

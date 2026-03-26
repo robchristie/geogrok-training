@@ -27,6 +27,11 @@ train = [
     "torch>=2.8.0",
     "torchvision>=0.23.0",
 ]
+obs = [
+    "fastapi>=0.116.0",
+    "pillow>=11.3.0",
+    "uvicorn>=0.35.0",
+]
 
 [project.scripts]
 geogrok-make-manifests = "geogrok.data.manifests:main"
@@ -41,9 +46,11 @@ geogrok-run-cnn-embedding = "geogrok.retrieval.cnn:main"
 geogrok-run-torch-embedding = "geogrok.retrieval.torch_encoder:main"
 geogrok-benchmark-pretrained = "geogrok.retrieval.pretrained_benchmark:main"
 geogrok-benchmark-pan-adapt = "geogrok.retrieval.pan_adapt_benchmark:main"
+geogrok-obs-api = "geogrok.obs.api:main"
+geogrok-build-review-artifacts = "geogrok.obs.review_artifacts:main"
 
 [tool.ruff]
-exclude = ["third_party", ".build", ".local", "tools/spacenet"]
+exclude = ["third_party", ".build", ".local", "tools/spacenet", "reference/geogrok"]
 line-length = 100
 src = ["src", "tests"]
 target-version = "py313"
@@ -56,7 +63,7 @@ root = ["./src"]
 
 [tool.ty.src]
 include = ["src", "tests"]
-exclude = ["third_party", ".build", ".local", "tools/spacenet"]
+exclude = ["third_party", ".build", ".local", "tools/spacenet", "reference/geogrok"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
